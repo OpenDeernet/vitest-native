@@ -201,7 +201,7 @@ export interface ReactNativeMock {
 export interface PresetModule {
   /** Factory that builds the mock object. Only called in Vitest worker processes. */
   factory: () => Record<string, any>;
-  /** Static list of named exports for virtual ESM module generation. Read at Vite config time (no vitest available). */
+  /** Named exports for virtual ESM module generation. Read at Vite config time (no vitest available). */
   exports: string[];
 }
 

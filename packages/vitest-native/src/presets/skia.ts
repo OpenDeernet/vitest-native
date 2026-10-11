@@ -1,9 +1,9 @@
-import type { Preset } from "../types.js";
+import type { Preset, PresetModule } from "../types.js";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { VitestNativeError } from "../errors.mjs";
-import { SKIA_EXPORTS } from "./skia-exports.js";
+import { esmExportNames } from "./esm-export-names.js";
 
 // @shopify/react-native-skia draws through a JSI binding to Skia's C++, which throws
 // at import in Node ("Native Skia Module failed to correctly install JSI Bindings").
@@ -21,8 +21,14 @@ import { SKIA_EXPORTS } from "./skia-exports.js";
 //   one throws ("Cannot pass "undefined" as a sk_sp<Typeface>"); a device returns a
 //   font of the requested size, so this returns Skia's default typeface at that size,
 //   as the mock's own useFont() does.
-// The mock's names that the real package does not export (hooks from earlier
-// releases) are not named exports here: see SKIA_MOCK_ONLY in skia-exports.ts.
+// The named exports are the installed version's, read from its ESM build (see
+// esm-export-names.ts): its API changes between versions (3.0 added Graphite, and
+// later 3.x releases removed the video APIs), so a fixed list would hold for one. The mock's names
+// that the real package does not export (hooks from earlier releases) stay on the
+// module object, as under Jest, but are not named exports.
+//
+// Skia is published as `react-native-skia` from 2.15.0 and `@shopify/react-native-skia`
+// up to 2.14.0. The preset shadows both, each from its own installed copy.
 //
 // CanvasKit is loaded from the installed Skia's own dependency (canvaskit-wasm is
 // Skia's, not the app's, and an isolated layout such as pnpm's does not hoist it).
@@ -31,14 +37,15 @@ import { SKIA_EXPORTS } from "./skia-exports.js";
 // Emscripten attaches most of CanvasKit's API (Path, Paint, Font, ...) only when
 // the runtime finishes initialising, after the synchronous part returns.
 
-const SKIA = "@shopify/react-native-skia";
+/** Skia's package names: `react-native-skia` from 2.15.0, the Shopify scope before. */
+const SKIA_PACKAGES = ["react-native-skia", "@shopify/react-native-skia"] as const;
 
-/** The installed Skia's directory, from the project root, or null when absent. */
-function skiaDir(): string | null {
+/** The installed package's directory, from the project root, or null when absent. */
+function packageDir(name: string): string | null {
   try {
     const root = process.env.VITEST_NATIVE_PROJECT_ROOT || process.cwd();
     return path.dirname(
-      createRequire(path.join(root, "package.json")).resolve(`${SKIA}/package.json`),
+      createRequire(path.join(root, "package.json")).resolve(`${name}/package.json`),
     );
   } catch {
     return null;
@@ -70,49 +77,77 @@ async function loadCanvasKit(dir: string): Promise<unknown> {
   });
 }
 
+function skiaModule(name: string): PresetModule {
+  let exports: string[] | undefined;
+  return {
+    // Read when the plugin resolves its config, which is the only reader.
+    get exports() {
+      if (exports) return exports;
+      const dir = packageDir(name);
+      if (!dir) return (exports = []);
+      try {
+        exports = esmExportNames(path.join(dir, "lib/module/index.js"));
+      } catch (cause) {
+        throw new VitestNativeError(
+          "PRESET_UNAVAILABLE",
+          `the skia preset could not read the named exports of the installed '${name}' ` +
+            `from its ESM build (${dir}/lib/module). A test that does not use Skia can ` +
+            `run without the preset: reactNative({ presets: { skia: false } }).`,
+          { cause },
+        );
+      }
+      return exports;
+    },
+    factory: () => {
+      const dir = packageDir(name);
+      if (!dir) {
+        throw new VitestNativeError(
+          "PRESET_UNAVAILABLE",
+          `the skia preset's mock for '${name}' needs '${name}' installed, and it does ` +
+            `not resolve from the project root.`,
+        );
+      }
+      const CanvasKit = (globalThis as any).CanvasKit;
+      if (!CanvasKit) {
+        throw new VitestNativeError(
+          "PRESET_NOT_PREPARED",
+          `the skia preset's mock was built before CanvasKit loaded. The setup file ` +
+            `loads it before each test file; a mock built outside a test run needs ` +
+            `\`await presets.skia().prepare()\` first.`,
+        );
+      }
+      const skiaRequire = createRequire(path.join(dir, "package.json"));
+      const { Mock } = skiaRequire("./lib/commonjs/mock") as {
+        Mock: (canvasKit: unknown) => Record<string, any>;
+      };
+      // Mock() sets global.SkiaApi, which the Reanimated helpers read on load.
+      const mock = Mock(CanvasKit);
+      const reanimatedHelpers = skiaRequire("./lib/commonjs/external/reanimated");
+      const realMatchFont = mock.matchFont;
+      return {
+        ...reanimatedHelpers,
+        ...mock,
+        // skia/core/Font.js: `fontSize` defaults to 14. A font manager the test
+        // supplies (from useFonts or Skia.TypefaceFontProvider) has fonts, so
+        // the real lookup runs against it.
+        matchFont: (style: { fontSize?: number } = {}, fontMgr?: unknown) =>
+          fontMgr === undefined
+            ? mock.Skia.Font(undefined, style.fontSize ?? 14)
+            : realMatchFont(style, fontMgr),
+      };
+    },
+  };
+}
+
 export function skia(): Preset {
   return {
     name: "skia",
     async prepare() {
-      const dir = skiaDir();
+      // A project has one of the two installed; CanvasKit is that copy's dependency.
+      const dir = SKIA_PACKAGES.map(packageDir).find((d) => d !== null);
       if (!dir) return;
       (globalThis as any).CanvasKit = await loadCanvasKit(dir);
     },
-    modules: {
-      [SKIA]: {
-        exports: [...SKIA_EXPORTS],
-        factory: () => {
-          const dir = skiaDir();
-          const CanvasKit = (globalThis as any).CanvasKit;
-          if (!dir || !CanvasKit) {
-            throw new VitestNativeError(
-              "PRESET_NOT_PREPARED",
-              `the skia preset's mock was built before CanvasKit loaded. The setup file ` +
-                `loads it before each test file; a mock built outside a test run needs ` +
-                `\`await presets.skia().prepare()\` first.`,
-            );
-          }
-          const skiaRequire = createRequire(path.join(dir, "package.json"));
-          const { Mock } = skiaRequire("./lib/commonjs/mock") as {
-            Mock: (canvasKit: unknown) => Record<string, any>;
-          };
-          // Mock() sets global.SkiaApi, which the Reanimated helpers read on load.
-          const mock = Mock(CanvasKit);
-          const reanimatedHelpers = skiaRequire("./lib/commonjs/external/reanimated");
-          const realMatchFont = mock.matchFont;
-          return {
-            ...reanimatedHelpers,
-            ...mock,
-            // skia/core/Font.js: `fontSize` defaults to 14. A font manager the test
-            // supplies (from useFonts or Skia.TypefaceFontProvider) has fonts, so
-            // the real lookup runs against it.
-            matchFont: (style: { fontSize?: number } = {}, fontMgr?: unknown) =>
-              fontMgr === undefined
-                ? mock.Skia.Font(undefined, style.fontSize ?? 14)
-                : realMatchFont(style, fontMgr),
-          };
-        },
-      },
-    },
+    modules: Object.fromEntries(SKIA_PACKAGES.map((name) => [name, skiaModule(name)])),
   };
 }

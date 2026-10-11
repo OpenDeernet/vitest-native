@@ -1,6 +1,7 @@
 /**
- * @shopify/react-native-skia under the native engine, zero-config: the package is
- * installed (a devDependency), so its preset is auto-detected and shadows it.
+ * Skia under the native engine, zero-config: it is installed (a devDependency) under
+ * both its names, `react-native-skia` 3.x and `@shopify/react-native-skia` 2.14, so
+ * its preset is auto-detected and shadows each.
  *
  * The real package throws at import in Node ("Native Skia Module failed to correctly
  * install JSI Bindings"). The preset serves Skia's own test mock over CanvasKit, so
@@ -18,9 +19,11 @@ import {
   usePathValue,
   listFontFamilies,
 } from "@shopify/react-native-skia";
-import { SKIA_EXPORTS, SKIA_MOCK_ONLY } from "../src/presets/skia-exports.js";
+import { createRequire } from "node:module";
+import { Skia as Skia3, SkiaGraphiteView } from "react-native-skia";
+import { skia } from "../src/presets/skia.js";
 
-describe("@shopify/react-native-skia (preset, native engine)", () => {
+describe("Skia (preset, native engine)", () => {
   it("has CanvasKit loaded before user setup files run", () => {
     expect((globalThis as any).__vnCanvasKitAtUserSetup).toBe(true);
   });
@@ -68,9 +71,20 @@ describe("@shopify/react-native-skia (preset, native engine)", () => {
     expect(svg).toBe("M0 0L5 5");
   });
 
-  it("declares exactly the names its factory builds that the real package exports", () => {
-    const module = (globalThis as any).__vitest_native_preset_mocks["@shopify/react-native-skia"];
-    const built = Object.keys(module).sort();
-    expect([...SKIA_EXPORTS, ...SKIA_MOCK_ONLY].sort()).toEqual(built);
+  it("serves Skia under its 3.x name, react-native-skia, to import and require()", () => {
+    expect(Skia3.Path.Rect(Skia3.XYWHRect(0, 0, 3, 4)).computeTightBounds().height).toBe(4);
+    expect(SkiaGraphiteView).toBeDefined();
+    expect(createRequire(import.meta.url)("react-native-skia").Skia).toBe(Skia3);
+  });
+
+  it("names the installed version's exports, each of which its mock provides", () => {
+    const mocks = (globalThis as any).__vitest_native_preset_mocks;
+    for (const [name, module] of Object.entries(skia().modules)) {
+      expect(module.exports.length, name).toBeGreaterThan(200);
+      expect(
+        module.exports.filter((n) => !(n in mocks[name])),
+        name,
+      ).toEqual([]);
+    }
   });
 });
