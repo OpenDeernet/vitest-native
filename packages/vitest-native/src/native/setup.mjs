@@ -101,9 +101,16 @@ try {
     presetConfig = JSON.parse(process.env.VITEST_NATIVE_PRESET_CONFIG);
 } catch {}
 
-// Discover preset module (package) names + their static export lists WITHOUT
-// building the mocks yet — building can lazily touch react-native, so the require
-// hooks must be installed first.
+// Discover preset module (package) names + their export lists WITHOUT building the
+// mocks yet — building can lazily touch react-native, so the require hooks must be
+// installed first. The plugin read the export lists while resolving its config and
+// passes them here; a preset may compute its own (skia parses the installed package
+// with Vite), which this worker should not repeat.
+let providedPresetExports = {};
+try {
+  if (process.env.VITEST_NATIVE_PRESET_EXPORTS)
+    providedPresetExports = JSON.parse(process.env.VITEST_NATIVE_PRESET_EXPORTS);
+} catch {}
 const presetDefs = []; // [{ pkg, mod, presetName }]
 const presetExports = {}; // pkg -> string[] (named exports, for the ESM loader)
 const presetPreparations = [];
@@ -114,7 +121,7 @@ for (const name of presetNames) {
   if (typeof preset.prepare === "function") presetPreparations.push(preset.prepare());
   for (const [pkg, mod] of Object.entries(preset.modules)) {
     presetDefs.push({ pkg, mod, presetName: preset.name });
-    presetExports[pkg] = mod.exports || [];
+    presetExports[pkg] = providedPresetExports[pkg] ?? mod.exports ?? [];
   }
 }
 // A preset's async preparation (the skia preset loads CanvasKit) completes before any

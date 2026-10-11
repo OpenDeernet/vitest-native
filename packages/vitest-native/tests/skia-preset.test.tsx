@@ -17,6 +17,7 @@ import { Canvas, Circle, Skia, matchFont } from "@shopify/react-native-skia";
 import * as skia3 from "react-native-skia";
 import { AUTO_DETECT_PRESETS, PRESET_MODULES } from "../src/preset-map.js";
 import { untilPrepared } from "../src/preset-preparation.js";
+import * as presets from "../src/presets/index.js";
 import { skia } from "../src/presets/skia.js";
 
 const SKIA = "@shopify/react-native-skia";
@@ -43,6 +44,16 @@ describe("skia preset: wiring", () => {
     // 3.0 added SkiaGraphiteView, so a list read from one version is wrong for the other.
     expect(preset.modules["react-native-skia"].exports).toContain("SkiaGraphiteView");
     expect(preset.modules[SKIA].exports).not.toContain("SkiaGraphiteView");
+  });
+
+  it("keeps every preset's export names within one Windows environment variable", () => {
+    // The plugin passes them to native workers as VITEST_NATIVE_PRESET_EXPORTS, and
+    // Windows caps a variable at 32,767 characters. Every preset active is the worst case.
+    const all: Record<string, string[]> = {};
+    for (const factory of Object.values(presets)) {
+      for (const [name, module] of Object.entries(factory().modules)) all[name] = module.exports;
+    }
+    expect(JSON.stringify(all).length).toBeLessThan(24_000);
   });
 
   it("says what to do when it cannot read the installed version's exports", () => {

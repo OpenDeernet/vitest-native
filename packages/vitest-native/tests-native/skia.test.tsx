@@ -21,7 +21,8 @@ import {
 } from "@shopify/react-native-skia";
 import { createRequire } from "node:module";
 import { Skia as Skia3, SkiaGraphiteView } from "react-native-skia";
-import { skia } from "../src/presets/skia.js";
+import * as skia2 from "@shopify/react-native-skia";
+import * as skia3 from "react-native-skia";
 
 describe("Skia (preset, native engine)", () => {
   it("has CanvasKit loaded before user setup files run", () => {
@@ -77,14 +78,29 @@ describe("Skia (preset, native engine)", () => {
     expect(createRequire(import.meta.url)("react-native-skia").Skia).toBe(Skia3);
   });
 
-  it("names the installed version's exports, each of which its mock provides", () => {
-    const mocks = (globalThis as any).__vitest_native_preset_mocks;
-    for (const [name, module] of Object.entries(skia().modules)) {
-      expect(module.exports.length, name).toBeGreaterThan(200);
+  it("imports each installed version's own exports, each of which its mock provides", () => {
+    // The names are read from the installed version while the plugin resolves its
+    // config. Reading them here would load Vite into the test worker.
+    const names3 = () =>
+      Object.keys(skia3)
+        .filter((n) => n !== "default")
+        .sort();
+    for (const [name, ns] of [
+      ["react-native-skia", skia3],
+      ["@shopify/react-native-skia", skia2],
+    ] as const) {
+      const names = Object.keys(ns).filter((n) => n !== "default");
+      expect(names.length, name).toBeGreaterThan(200);
       expect(
-        module.exports.filter((n) => !(n in mocks[name])),
+        names.filter((n) => (ns as Record<string, unknown>)[n] === undefined),
         name,
       ).toEqual([]);
     }
+    // The plugin read them; the setup file took them from the environment.
+    const provided = JSON.parse(process.env.VITEST_NATIVE_PRESET_EXPORTS ?? "{}");
+    expect(provided["react-native-skia"]).toEqual(names3());
+    // 3.0 added SkiaGraphiteView, so one version's list is wrong for the other.
+    expect("SkiaGraphiteView" in skia3).toBe(true);
+    expect("SkiaGraphiteView" in skia2).toBe(false);
   });
 });
