@@ -140,7 +140,7 @@ describe("every message this package throws is attributable", () => {
   //     which cannot import errors.mjs; it builds the VitestNativeError shape (name and
   //     code) that isVitestNativeError recognises.
   const RAW_ALLOWED = [
-    "new Error(`Unistyles: ${message}`",
+    "new Error(message, cause === undefined ? undefined : { cause })",
     "throw new Error(`${name} cannot be nested inside another ${name} or ${other}.`);",
     'throw Object.assign(new Error("[vitest-native] jest.mock() factories need',
   ];

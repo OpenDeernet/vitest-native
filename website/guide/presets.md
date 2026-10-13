@@ -67,14 +67,20 @@ Unistyles 3 resolves styles in native code, so its preset stands in for it. Its 
 test: { setupFiles: ['./src/unistyles.ts'] }
 ```
 
-The preset agrees with Unistyles' own Jest mock (`react-native-unistyles/mocks`), which a migrating suite was written against, so that mock is no longer needed. Where that mock does less than the library, the preset follows the library's source:
+The preset agrees with Unistyles' own Jest mock (`react-native-unistyles/mocks`), which a migrating suite was written against, so that mock is no longer needed; remove it from `setupFiles` (`vitest-native migrate` does), because its `jest.mock()` calls would replace the preset. Where that mock does less than the library, the preset follows the device runtime's source:
 
-- Variants and compound variants apply, and `styles.useVariants()` selects them.
-- `initialTheme` and `adaptiveThemes` choose the theme, and `UnistylesRuntime.setTheme()` switches it for the next render.
+- Styles resolve as the device parses them: breakpoint values (`{ xs: 10, md: 20 }`) and `mq` keys against the screen, `_web` styles dropped.
+- Variants and compound variants apply by the device's rules, and `styles.useVariants()` selects them.
+- `StyleSheet.configure()` validates its input and chooses the theme (`initialTheme`, `adaptiveThemes`, which follow the colour scheme) with the device's messages; `UnistylesRuntime.setTheme()`, `updateTheme()` and `setAdaptiveThemes()` take effect.
+- `ScopedTheme` scopes a theme to its children (`name`, `invertedAdaptive`, `reset`), and `withUnistyles` applies its mappings and `uniProps`.
 - `Display` and `Hide` follow `mq` against the screen size.
-- `ScopedTheme` renders its children.
+- vitest-native's `resetAllMocks()` returns the theme to what `StyleSheet.configure()` set.
 
-One difference from a device: with several themes and none selected, a device throws on first use, while the preset falls back to the first theme, as Unistyles' Jest mock does.
+What differs from a device:
+
+- **Re-rendering.** A device restyles mounted views natively when the theme or the screen changes, without a React render. Here, components that use `useUnistyles()`, `withUnistyles`, `Display`, `Hide` or `ScopedTheme` re-render on a change; a component that only reads `StyleSheet.create` styles shows it on its next render.
+- **Variants per component.** Unistyles' Babel plugin binds a `useVariants()` selection to each component, and the plugin is off under test, so the selection belongs to the stylesheet. A style read after another instance selected different variants (a `Pressable` style function, on press) sees that instance's selection.
+- **No theme selected.** With several themes and none selected, a device throws on first use, while the preset falls back to the first theme, as Unistyles' Jest mock does.
 
 ## Mock resets
 
