@@ -14,7 +14,7 @@ import React from "react";
 import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react-native";
 import * as skia2 from "@shopify/react-native-skia";
-import { Canvas, Circle, Skia, matchFont } from "@shopify/react-native-skia";
+import { Canvas, Circle, Skia, matchFont, useFont } from "@shopify/react-native-skia";
 import * as skia3 from "react-native-skia";
 import { reactNative } from "../src/index.js";
 import { AUTO_DETECT_PRESETS, PRESET_MODULES } from "../src/preset-map.js";
@@ -95,6 +95,54 @@ describe("skia preset: wiring", () => {
     expect(plugin.resolveId("react-native-skia", undefined)).toBeUndefined();
   });
 
+  it("refuses to be listed by hand where no Skia resolves, rather than shadow nothing", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vn-skia-absent-"));
+    fs.writeFileSync(path.join(root, "package.json"), '{"name":"app"}');
+    fs.mkdirSync(path.join(root, "node_modules"));
+    for (const peer of ["vitest", "vite", "react"]) {
+      const target = path.dirname(createRequire(import.meta.url).resolve(`${peer}/package.json`));
+      fs.symlinkSync(target, path.join(root, "node_modules", peer), "junction");
+    }
+    const plugin = reactNative({ engine: "mock", presets: [skia()] }) as any;
+    await runPluginConfig(plugin, { root }, { command: "serve", mode: "test" });
+    await expect(plugin.configResolved({ root })).rejects.toThrow(
+      /The skia preset is listed in `presets`, and none of its packages \(react-native-skia, @shopify\/react-native-skia\) resolves/,
+    );
+  });
+
+  it("passes each project's export names to its workers, and refuses a VM pool", async () => {
+    const root = process.cwd();
+    const plugin = reactNative({ engine: "mock" }) as any;
+    const result = await runPluginConfig(plugin, { root }, { command: "serve", mode: "test" });
+    await plugin.configResolved({ root });
+    const setupFiles = result.test.setupFiles;
+    const project = (pool?: string) => ({
+      config: { root, pool, setupFiles, env: {} as Record<string, string> },
+    });
+    const vitest = { config: { cliOptions: {} } };
+    const threads = project("threads");
+    plugin.configureVitest({ vitest, project: threads });
+    const passed = JSON.parse(threads.config.env.VITEST_NATIVE_PRESET_EXPORTS);
+    expect(passed["react-native-skia"]).toEqual(installedNames("react-native-skia"));
+    expect(passed[SKIA]).toEqual(installedNames(SKIA));
+    expect(() => plugin.configureVitest({ vitest, project: project("vmThreads") })).toThrow(
+      /The skia preset cannot run on the 'vmThreads' pool[\s\S]*presets: \{ skia: false \}/,
+    );
+  });
+
+  it("runs its setup and the preparation it awaits before the user's setup files", async () => {
+    const userConfig = { root: process.cwd(), test: { setupFiles: ["./user-setup.ts"] } };
+    await runPluginConfig(reactNative({ engine: "mock" }) as any, userConfig, {
+      command: "serve",
+      mode: "test",
+    });
+    expect(userConfig.test.setupFiles.map((f) => path.basename(f))).toEqual([
+      "setup.ts",
+      "preset-ready.mjs",
+      "user-setup.ts",
+    ]);
+  });
+
   it("keeps every preset's export names within one Windows environment variable", () => {
     // The plugin passes them to workers as VITEST_NATIVE_PRESET_EXPORTS, and Windows
     // caps a variable at 32,767 characters. Every preset active is the worst case.
@@ -122,6 +170,9 @@ describe("skia preset: wiring", () => {
 
   it("says what to do when CanvasKit cannot load", async () => {
     // The stand-in has no canvaskit-wasm beside it.
+    const g = globalThis as any;
+    const canvasKit = g.CanvasKit;
+    delete g.CanvasKit;
     vi.stubEnv("VITEST_NATIVE_PROJECT_ROOT", shopifyOnlyProject());
     try {
       await expect(skia().prepare!()).rejects.toThrow(
@@ -129,7 +180,28 @@ describe("skia preset: wiring", () => {
       );
     } finally {
       vi.unstubAllEnvs();
+      g.CanvasKit = canvasKit;
     }
+  });
+
+  it("keeps the CanvasKit a worker already loaded", async () => {
+    const before = (globalThis as any).CanvasKit;
+    expect(before).toBeDefined();
+    await skia().prepare!();
+    expect((globalThis as any).CanvasKit).toBe(before);
+  });
+
+  it("finds a package whose exports map does not expose package.json", () => {
+    const root = shopifyOnlyProject();
+    const dir = path.join(root, "node_modules", SKIA);
+    fs.writeFileSync(
+      path.join(dir, "package.json"),
+      JSON.stringify({ name: SKIA, version: "9.0.0", exports: { ".": "./lib/module/index.js" } }),
+    );
+    expect(skia().modules[SKIA].exportsFor!({ projectRoot: root, platform: "ios" })).toEqual([
+      "Canvas",
+      "Skia",
+    ]);
   });
 
   it("says so when it is enabled and Skia is not installed", async () => {
@@ -171,6 +243,8 @@ describe("skia preset under the mock engine", () => {
     );
     expect(screen.getByTestId("canvas")).toBeTruthy();
     expect(matchFont({ fontSize: 12 }).getSize()).toBe(12);
+    expect(useFont(1, 18)!.getSize()).toBe(18);
+    expect(useFont(1)!.getSize()).toBe(14);
   });
 
   it("serves Skia under its 3.x name, react-native-skia", () => {

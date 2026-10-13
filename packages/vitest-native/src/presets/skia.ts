@@ -19,7 +19,7 @@ import { esmExportNames } from "./esm-export-names.js";
 // - matchFont() returns a font. Over CanvasKit, which has no system fonts, the real
 //   one throws ("Cannot pass "undefined" as a sk_sp<Typeface>"); a device returns a
 //   font of the requested size, so this returns Skia's default typeface at that size,
-//   as the mock's own useFont() does.
+//   and so does useFont(), whose mock ignores the size.
 //
 // Skia is published as `react-native-skia` from 2.15.0 and as
 // `@shopify/react-native-skia` up to 2.14.0. The preset shadows whichever of the two
@@ -45,18 +45,27 @@ const SKIA_PACKAGES = ["react-native-skia", "@shopify/react-native-skia"] as con
 const OPT_OUT =
   "A project whose tests do not use Skia can turn the preset off: reactNative({ presets: { skia: false } }).";
 
-/** The installed package's directory, resolved from `root`, or null when absent. */
+/**
+ * The installed package's directory, resolved from `root`, or null when absent: the
+ * nearest `node_modules/<name>`, as Node looks it up. Read from disk rather than
+ * through require(): under the mock engine, once a preset module's require() bridge is
+ * installed, a request for the package resolves to the module's virtual id
+ * (cjs-bridge.ts), and an `exports` map may not expose `./package.json`.
+ */
 function packageDir(name: string, root: string): string | null {
-  let manifest: string;
+  for (let dir = path.resolve(root); ; dir = path.dirname(dir)) {
+    const candidate = path.join(dir, "node_modules", name);
+    if (fs.existsSync(path.join(candidate, "package.json"))) return fs.realpathSync(candidate);
+    if (dir === path.dirname(dir)) break;
+  }
+  // A layout without node_modules directories (Yarn Plug'n'Play) resolves only
+  // through require().
   try {
-    manifest = createRequire(path.join(root, "package.json")).resolve(`${name}/package.json`);
+    const manifest = createRequire(path.join(root, "package.json")).resolve(`${name}/package.json`);
+    return path.isAbsolute(manifest) && fs.existsSync(manifest) ? path.dirname(manifest) : null;
   } catch {
     return null;
   }
-  // Under the mock engine, once a preset module's require() bridge is installed, a
-  // manifest that is not on disk resolves to the module's virtual id instead of
-  // throwing (cjs-bridge.ts); only a real file means the package is installed.
-  return path.isAbsolute(manifest) && fs.existsSync(manifest) ? path.dirname(manifest) : null;
 }
 
 /** The project root in a test worker, where the plugin sets it. */
@@ -132,13 +141,17 @@ function skiaModule(name: string): PresetModule {
       return {
         ...reanimatedHelpers,
         ...mock,
-        // skia/core/Font.js: `fontSize` defaults to 14. A font manager the test
+        // skia/core/Font.ts: `fontSize` defaults to 14. A font manager the test
         // supplies (from useFonts or Skia.TypefaceFontProvider) has fonts, so
         // the real lookup runs against it.
         matchFont: (style: { fontSize?: number } = {}, fontMgr?: unknown) =>
           fontMgr === undefined
             ? mock.Skia.Font(undefined, style.fontSize ?? 14)
             : realMatchFont(style, fontMgr),
+        // skia/core/Font.ts: useFont(source, size = 14) is a font of that size. The
+        // mock's own returns size 0 whatever is asked; this keeps it synchronous, on
+        // Skia's default typeface.
+        useFont: (_source: unknown, size = 14) => mock.Skia.Font(undefined, size),
       };
     },
   };
@@ -158,6 +171,10 @@ export function skia(): Preset {
             `resolves from ${root}. ${OPT_OUT}`,
         );
       }
+      // A worker that runs several files in one context (isolate: false) keeps the
+      // first CanvasKit, and Skia's cached modules keep using it; loading another
+      // would cost the start-up again for nothing.
+      if ((globalThis as any).CanvasKit) return;
       (globalThis as any).CanvasKit = await loadCanvasKit(dir);
     },
     modules: Object.fromEntries(SKIA_PACKAGES.map((name) => [name, skiaModule(name)])),

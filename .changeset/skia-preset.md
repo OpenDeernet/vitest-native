@@ -8,4 +8,6 @@ A `skia` preset for Skia, which threw at import in tests ("Native Skia Module fa
 - Its named exports are read from the installed version's ESM build, since Skia's API changes between releases.
 - It adds Skia's Reanimated helpers (`usePathValue`, `useTexture`, …), which the mock leaves out, and makes `matchFont` return a font.
 
-Presets can now declare an async `prepare()`, which completes before any setup file or test file of the user's loads, and a preset module can declare `exportsFor()`, which reads its named exports from the installed package (or returns `null` when it is not installed, leaving it unshadowed).
+The `Preset` type gains an optional async `prepare()`, which completes before any of the user's setup files or test files load, and `PresetModule` an optional `exportsFor()`, which reads the module's named exports from the installed package (or returns `null` when it is not installed, leaving it unshadowed). The skia preset uses both.
+
+The project root given to test workers now follows `test.root` (or `--root`), as Vitest's does; a run started from a parent directory resolved packages from that directory in every worker.

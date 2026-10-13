@@ -64,7 +64,9 @@ Skia is published as `react-native-skia` from 2.15.0 and as `@shopify/react-nati
 
 The named exports are read from the installed version, because Skia's API changes between releases (2.15.0 added `SkiaGraphiteView`; 3.0.5 removed `useVideo`), so an import resolves as it does in the app for whichever version the project has.
 
-Beyond Skia's own mock, the preset adds Skia's Reanimated helpers (`usePathValue`, `useTexture`, `notifyChange`, …) running over the reanimated preset. It also makes `matchFont` return a font of the requested size, because CanvasKit has no system fonts to match.
+Beyond Skia's own mock, the preset adds Skia's Reanimated helpers (`usePathValue`, `useTexture`, `notifyChange`, …) running over the reanimated preset. It also makes `matchFont` and `useFont` return a font of the requested size, on Skia's default typeface, because CanvasKit has no system fonts and the mock's `useFont` ignores the size. As under Skia's Jest setup, `drawAsImage`, `drawAsPicture` and `drawAsImageFromPicture` are no-ops that return `undefined`; `Skia.PictureRecorder`, `Skia.Surface` and `makeImageSnapshot` draw for real.
+
+The preset needs a worker pool (`threads`, the default, or `forks`): Skia's mock loads `react-native` through Node's `require`, which a VM pool does not route to the React Native mock, so a `vmThreads` or `vmForks` run is refused.
 
 CanvasKit loads before each test file, as Skia's Jest environment does, so a project with Skia installed pays that start-up cost in every file (about 15–20 ms on one thread, more under parallel load). If CanvasKit cannot load, every test file fails with an error that names the cause. If no test touches Skia, turn the preset off with `reactNative({ presets: { skia: false } })`.
 

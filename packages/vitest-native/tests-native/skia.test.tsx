@@ -79,26 +79,22 @@ describe("Skia (preset, native engine)", () => {
   });
 
   it("imports each installed version's own exports, each of which its mock provides", () => {
-    // The names are read from the installed version while the plugin resolves its
-    // config. Reading them here would load Vite into the test worker.
-    const names3 = () =>
-      Object.keys(skia3)
-        .filter((n) => n !== "default")
-        .sort();
+    // The plugin reads the names from the installed version while it resolves its
+    // config (checked against Skia's own ESM build in tests/skia-preset.test.tsx);
+    // reading them here would load Vite into the test worker.
+    const provided = JSON.parse(process.env.VITEST_NATIVE_PRESET_EXPORTS ?? "{}");
     for (const [name, ns] of [
       ["react-native-skia", skia3],
       ["@shopify/react-native-skia", skia2],
     ] as const) {
       const names = Object.keys(ns).filter((n) => n !== "default");
-      expect(names.length, name).toBeGreaterThan(200);
+      // The ESM module is built from the plugin's list, through the environment.
+      expect(names.sort(), name).toEqual(provided[name]);
       expect(
         names.filter((n) => (ns as Record<string, unknown>)[n] === undefined),
         name,
       ).toEqual([]);
     }
-    // The plugin read them; the setup file took them from the environment.
-    const provided = JSON.parse(process.env.VITEST_NATIVE_PRESET_EXPORTS ?? "{}");
-    expect(provided["react-native-skia"]).toEqual(names3());
     // 2.15.0 added SkiaGraphiteView, so one version's list is wrong for the other.
     expect("SkiaGraphiteView" in skia3).toBe(true);
     expect("SkiaGraphiteView" in skia2).toBe(false);

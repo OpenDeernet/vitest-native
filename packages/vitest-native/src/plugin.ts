@@ -67,7 +67,12 @@ function stripFsPrefix(id: string): string {
   return id.startsWith("/@fs/") ? id.slice(4) : id;
 }
 
-import { AUTO_DETECT_PRESETS, DEFAULT_ASSET_EXTS, presetForInstalled } from "./preset-map.js";
+import {
+  AUTO_DETECT_PRESETS,
+  DEFAULT_ASSET_EXTS,
+  PRESET_MODULES,
+  presetForInstalled,
+} from "./preset-map.js";
 
 async function autoDetectPresets(diagnostics: boolean, projectRoot: string): Promise<Preset[]> {
   const detected: Preset[] = [];
@@ -1324,11 +1329,12 @@ export function reactNative(options?: VitestNativeOptions): Plugin {
       // into Vitest worker processes. globalThis does NOT survive this
       // boundary — we use test.env to inject process.env vars instead.
       //
-      // Resolve the project root using the same logic as Vite:
-      // path.resolve(userConfig.root) if set, else process.cwd().
-      // This must happen here (not configResolved) because test.env
-      // is captured before configResolved runs.
-      const resolvedRoot = userConfig.root ? path.resolve(userConfig.root) : process.cwd();
+      // Resolve the project root as Vitest does: `test.root` (or `--root`), then Vite's
+      // `root`, then process.cwd(). Vitest makes `test.root` Vite's root too, so this is
+      // the root configResolved sees; the workers resolve packages from it. This must
+      // happen here (not configResolved) because test.env is captured before
+      // configResolved runs.
+      const resolvedRoot = vitestRootOf(userConfig);
       alignRoot = resolvedRoot;
       const metroOption = options?.metroConfig;
       if (metroOption === true || typeof metroOption === "object") {
@@ -1910,14 +1916,29 @@ export function reactNative(options?: VitestNativeOptions): Plugin {
       // package installed at the project root, and is not shadowed when there is none.
       const exportsByModule: Record<string, string[] | null> = {};
       for (const preset of resolved.presets) {
+        let shadows = false;
         for (const [moduleName, presetModule] of Object.entries(preset.modules)) {
           const names = presetModule.exportsFor
             ? presetModule.exportsFor({ projectRoot: config.root, platform: resolved.platform })
             : presetModule.exports;
           exportsByModule[moduleName] = names;
           if (names === null) continue;
+          shadows = true;
           presetModules.set(moduleName, presetModule.factory);
           presetExportNames.set(moduleName, names);
+        }
+        // A preset listed by hand that finds none of its packages would shadow nothing,
+        // and the real package would load in its place (an auto-detected one is only
+        // active when its package resolves).
+        const readsInstalled = Object.values(preset.modules).some((m) => m.exportsFor);
+        if (!shadows && readsInstalled && Array.isArray(options?.presets)) {
+          throw new VitestNativeError(
+            "PRESET_UNAVAILABLE",
+            `The ${preset.name} preset is listed in \`presets\`, and none of its packages ` +
+              `(${Object.keys(preset.modules).join(", ")}) resolves from the project root, ` +
+              `${config.root}. Set the Vitest project's \`root\` to the package that ` +
+              `depends on them.`,
+          );
         }
       }
       presetExportsByRoot.set(vitestRootOf(config), exportsByModule);
@@ -2335,6 +2356,20 @@ export function reactNative(options?: VitestNativeOptions): Plugin {
       const cli = vitest._cliOptions ?? vitest.config?.cliOptions ?? {};
       // On Vitest 4 a `--pool` flag arrives after config(), past its check.
       if (nativeRoots.has(root) && isVmPool(cli.pool)) throw vmPoolUnsupported(cli.pool);
+      // Skia's own mock, which the skia preset serves, require()s react-native through
+      // Node. Under the mock engine that require reaches the React Native mock through
+      // the CommonJS bridge (cjs-bridge.ts), which a VM pool's context does not use, so
+      // it would load React Native's Flow source and fail every test file.
+      const pool = cli.pool ?? projectConfig.pool;
+      if (isVmPool(pool) && PRESET_MODULES.skia.some((name) => presetExports?.[name])) {
+        throw new VitestNativeError(
+          "UNSUPPORTED_POOL",
+          `The skia preset cannot run on the '${pool}' pool: Skia's test mock loads ` +
+            `react-native through Node's require, which a VM pool's context does not route ` +
+            `to the React Native mock. Use 'threads' (the default) or 'forks', or turn the ` +
+            `preset off: reactNative({ presets: { skia: false } }).`,
+        );
+      }
       const selection = hotSelections.get(root);
       if (!selection) return;
       const reason =
