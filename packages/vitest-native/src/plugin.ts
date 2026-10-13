@@ -894,17 +894,17 @@ export function pinInlineProjectRoots(test: unknown, declaringRoot: string): num
  * React Native's Flow source ("Unexpected token 'typeof'"). The hot runtime hid this
  * by installing the hooks at worker boot; every other run broke. Jest has the same
  * ordering contract: a preset's `setupFiles` run before the project's
- * `setupFilesAfterEnv`. Moving the entry into the user's list (and out of the merged
- * result) keeps a single copy at the front.
+ * `setupFilesAfterEnv`. Moving the entries into the user's list (and out of the merged
+ * result) keeps a single copy of each at the front, in order.
  */
 function prependSetupFile(userConfig: UserConfig, contributed: { setupFiles?: unknown }): void {
-  const ours = (contributed.setupFiles as string[])[0];
+  const ours = contributed.setupFiles as string[];
   const userTest = ((userConfig as { test?: { setupFiles?: unknown } }).test ??= {});
   const existing = userTest.setupFiles;
   const userFiles = Array.isArray(existing) ? existing : existing == null ? [] : [existing];
   if (userFiles.length === 0) return;
-  userTest.setupFiles = [ours, ...userFiles.filter((f) => f !== ours)];
-  contributed.setupFiles = (contributed.setupFiles as string[]).slice(1);
+  userTest.setupFiles = [...ours, ...userFiles.filter((f) => !ours.includes(f))];
+  contributed.setupFiles = [];
 }
 
 function hasSetupFile(setupFiles: unknown, file: string): boolean {
@@ -1042,9 +1042,9 @@ export function reactNative(options?: VitestNativeOptions): Plugin {
   // it gave each project root.
   const nativeRoots = new Set<string>();
   const contributedSetup = new Map<string, string>();
-  // Each native root's preset module → named exports, for the native setup file (see
-  // configureVitest).
-  const nativePresetExports = new Map<string, Record<string, string[]>>();
+  // Each root's preset module → named exports, or null for a module whose package is
+  // not installed (not shadowed), for the setup files (see configureVitest).
+  const presetExportsByRoot = new Map<string, Record<string, string[] | null>>();
   // This plugin's part of Vitest's persistent transform cache key, per root (see
   // fs-module-cache.ts).
   const cacheKeys = new Map<string, string>();
@@ -1097,8 +1097,6 @@ export function reactNative(options?: VitestNativeOptions): Plugin {
   const presetModules = new Map<string, () => Record<string, any>>();
   // Preset export names discovered by calling factories at config time.
   const presetExportNames = new Map<string, string[]>();
-  // Modules of presets with async preparation, which their virtual module awaits.
-  const preparedPresetModules = new Set<string>();
   let assetPattern: RegExp;
   // Real on-disk path of react-native/package.json (mock engine): version-gate
   // reads must see the real manifest, not the virtualized mock.
@@ -1250,6 +1248,9 @@ export function reactNative(options?: VitestNativeOptions): Plugin {
     }
   }
 
+  // Runs after the mock engine's setup file and awaits its presets' preparation
+  // (shipped verbatim; see the file).
+  const presetReadyPath = path.resolve(thisDir, "preset-ready.mjs");
   // Native-engine setup file (shipped verbatim as dist/native/setup.mjs; the src
   // tree mirrors that layout so both built and source resolution find it here).
   const nativeSetupPath = path.resolve(thisDir, "native/setup.mjs");
@@ -1803,7 +1804,7 @@ export function reactNative(options?: VitestNativeOptions): Plugin {
           dedupe: ["react", "react-test-renderer", "test-renderer", "react-is"],
         },
         test: {
-          setupFiles: [setupFilePath],
+          setupFiles: [setupFilePath, presetReadyPath],
           env,
         },
       });
@@ -1905,17 +1906,21 @@ export function reactNative(options?: VitestNativeOptions): Plugin {
       // Build preset module lookup and read export names.
       // Export names are read here, at Vite config time, without calling the
       // factory (which requires vitest, only available in worker processes). Most
-      // are a static list; the skia preset reads its own from the installed package.
-      const exportsByModule: Record<string, string[]> = {};
+      // are a static list; a module with exportsFor (skia) reads its own from the
+      // package installed at the project root, and is not shadowed when there is none.
+      const exportsByModule: Record<string, string[] | null> = {};
       for (const preset of resolved.presets) {
         for (const [moduleName, presetModule] of Object.entries(preset.modules)) {
+          const names = presetModule.exportsFor
+            ? presetModule.exportsFor({ projectRoot: config.root, platform: resolved.platform })
+            : presetModule.exports;
+          exportsByModule[moduleName] = names;
+          if (names === null) continue;
           presetModules.set(moduleName, presetModule.factory);
-          presetExportNames.set(moduleName, presetModule.exports);
-          exportsByModule[moduleName] = presetModule.exports;
-          if (typeof preset.prepare === "function") preparedPresetModules.add(moduleName);
+          presetExportNames.set(moduleName, names);
         }
       }
-      if (engine === "native") nativePresetExports.set(vitestRootOf(config), exportsByModule);
+      presetExportsByRoot.set(vitestRootOf(config), exportsByModule);
 
       // Read the facade's export list from React Native's own index.
       if (engine === "native") {
@@ -2050,11 +2055,6 @@ export function reactNative(options?: VitestNativeOptions): Plugin {
         const leaf = specifier === pkg ? null : subpathLeafOf(specifier);
         const fallback = `('default' in _m ? _m['default'] : _m)`;
         const code = [
-          // The mock engine builds a prepared preset's module once its preparation
-          // settles (setup.ts); the native setup awaits it, leaving nothing here.
-          ...(preparedPresetModules.has(pkg)
-            ? [`await (globalThis.__vitest_native_preset_ready || {})[${JSON.stringify(pkg)}];`]
-            : []),
           `const _m = (globalThis.__vitest_native_preset_mocks || {})[${JSON.stringify(pkg)}] || {};`,
           ...exportNames.map((n) => `export const ${n} = _m['${n}'];`),
           ...(leaf
@@ -2322,12 +2322,12 @@ export function reactNative(options?: VitestNativeOptions): Plugin {
             `set \`test.sharedViteServer: false\` in the top-level Vitest config.`,
         );
       }
-      // The native setup file gives each preset module's named exports to the ESM
-      // loader. They travel from here rather than being read again in the worker: the
+      // The setup files take each preset module's named exports, and whether it is
+      // shadowed at all, from here rather than reading them again in the worker: the
       // skia preset reads its own by parsing the installed package with Vite, which
       // would load Vite into every test file's worker (and leave a global behind that
       // the hot runtime cannot remove).
-      const presetExports = nativePresetExports.get(root);
+      const presetExports = presetExportsByRoot.get(root);
       if (presetExports) {
         projectConfig.env ??= {};
         projectConfig.env.VITEST_NATIVE_PRESET_EXPORTS = JSON.stringify(presetExports);

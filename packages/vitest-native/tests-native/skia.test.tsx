@@ -72,7 +72,7 @@ describe("Skia (preset, native engine)", () => {
     expect(svg).toBe("M0 0L5 5");
   });
 
-  it("serves Skia under its 3.x name, react-native-skia, to import and require()", () => {
+  it("serves Skia under its current name, react-native-skia, to import and require()", () => {
     expect(Skia3.Path.Rect(Skia3.XYWHRect(0, 0, 3, 4)).computeTightBounds().height).toBe(4);
     expect(SkiaGraphiteView).toBeDefined();
     expect(createRequire(import.meta.url)("react-native-skia").Skia).toBe(Skia3);
@@ -99,7 +99,7 @@ describe("Skia (preset, native engine)", () => {
     // The plugin read them; the setup file took them from the environment.
     const provided = JSON.parse(process.env.VITEST_NATIVE_PRESET_EXPORTS ?? "{}");
     expect(provided["react-native-skia"]).toEqual(names3());
-    // 3.0 added SkiaGraphiteView, so one version's list is wrong for the other.
+    // 2.15.0 added SkiaGraphiteView, so one version's list is wrong for the other.
     expect("SkiaGraphiteView" in skia3).toBe(true);
     expect("SkiaGraphiteView" in skia2).toBe(false);
   });

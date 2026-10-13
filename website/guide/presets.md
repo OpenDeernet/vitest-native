@@ -60,13 +60,13 @@ Presets apply under **both** engines.
 
 ## Skia
 
-Skia is published as `react-native-skia` from 2.15.0 and as `@shopify/react-native-skia` up to 2.14.0; the preset covers both. It draws through a native binding that cannot load in Node, so its preset uses Skia's own test support. It loads CanvasKit (Skia compiled to WebAssembly, a dependency of Skia itself) and serves Skia's own test mock over it. The `Skia` API (paths, matrices, colours, pictures) therefore computes with real Skia, and `Canvas` and its drawing render as React Native Views. No configuration is needed, and Skia's `jestEnv`/`jestSetup` files are not used.
+Skia is published as `react-native-skia` from 2.15.0 and as `@shopify/react-native-skia` up to 2.14.0; the preset shadows whichever the project has installed. It draws through a native binding that cannot load in Node, so its preset uses Skia's own test support. It loads CanvasKit (Skia compiled to WebAssembly, a dependency of Skia itself) and serves Skia's own test mock over it. The `Skia` API (paths, matrices, colours, pictures) therefore computes with real Skia, and `Canvas` and its drawing render as React Native Views. No configuration is needed, and Skia's `jestEnv`/`jestSetup` files are not used.
 
-The named exports are read from the installed version, because Skia's API changes between majors (3.0 added `SkiaGraphiteView`; 3.x later removed the video APIs), so an import resolves as it does in the app for whichever version the project has.
+The named exports are read from the installed version, because Skia's API changes between releases (2.15.0 added `SkiaGraphiteView`; 3.0.5 removed `useVideo`), so an import resolves as it does in the app for whichever version the project has.
 
 Beyond Skia's own mock, the preset adds Skia's Reanimated helpers (`usePathValue`, `useTexture`, `notifyChange`, …) running over the reanimated preset. It also makes `matchFont` return a font of the requested size, because CanvasKit has no system fonts to match.
 
-CanvasKit loads before each test file, as Skia's Jest environment does, so a project with Skia installed pays that start-up cost in every file (tens of milliseconds). If no test touches Skia, turn the preset off with `reactNative({ presets: { skia: false } })`.
+CanvasKit loads before each test file, as Skia's Jest environment does, so a project with Skia installed pays that start-up cost in every file (about 15–20 ms on one thread, more under parallel load). If CanvasKit cannot load, every test file fails with an error that names the cause. If no test touches Skia, turn the preset off with `reactNative({ presets: { skia: false } })`.
 
 ## Mock resets
 

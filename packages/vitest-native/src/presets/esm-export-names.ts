@@ -14,14 +14,16 @@ import { VitestNativeError } from "../errors.mjs";
 // the plugin resolves its config, in the process that already loaded Vite.
 
 /** Metro's order for a module path without an extension: platform files first. */
-const SOURCE_EXTENSIONS = [".ios.js", ".native.js", ".js"];
+function sourceExtensions(platform: "ios" | "android"): string[] {
+  return [`.${platform}.js`, ".native.js", ".js"];
+}
 
-function resolveRelative(from: string, request: string): string {
+function resolveRelative(from: string, request: string, extensions: string[]): string {
   const base = path.resolve(path.dirname(from), request);
   for (const candidate of [
     base,
-    ...SOURCE_EXTENSIONS.map((ext) => base + ext),
-    ...SOURCE_EXTENSIONS.map((ext) => path.join(base, `index${ext}`)),
+    ...extensions.map((ext) => base + ext),
+    ...extensions.map((ext) => path.join(base, `index${ext}`)),
   ]) {
     if (fs.statSync(candidate, { throwIfNoEntry: false })?.isFile()) return candidate;
   }
@@ -48,11 +50,12 @@ function exportedName(node: Node): string {
 }
 
 /**
- * The named exports of the ESM module `entry`, following `export *` through relative
- * paths. `default` is left out: `export *` does not re-export it, and a preset's
+ * The named exports of the ESM module `entry` on `platform`, following `export *`
+ * through relative paths. `default` is left out: `export *` does not re-export it, and a preset's
  * module serves its default separately.
  */
-export function esmExportNames(entry: string): string[] {
+export function esmExportNames(entry: string, platform: "ios" | "android" = "ios"): string[] {
+  const extensions = sourceExtensions(platform);
   const { parseAst } = createRequire(import.meta.url)("vite") as {
     parseAst: (code: string) => { body: Node[] };
   };
@@ -65,7 +68,7 @@ export function esmExportNames(entry: string): string[] {
       if (node.type === "ExportAllDeclaration") {
         if (node.exported) names.add(exportedName(node.exported));
         else if (String(node.source.value).startsWith(".")) {
-          visit(resolveRelative(file, node.source.value));
+          visit(resolveRelative(file, node.source.value, extensions));
         } else {
           throw new VitestNativeError(
             "PRESET_UNAVAILABLE",

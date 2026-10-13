@@ -201,8 +201,15 @@ export interface ReactNativeMock {
 export interface PresetModule {
   /** Factory that builds the mock object. Only called in Vitest worker processes. */
   factory: () => Record<string, any>;
-  /** Named exports for virtual ESM module generation. Read at Vite config time (no vitest available). */
+  /** Static list of named exports for virtual ESM module generation. Read at Vite config time (no vitest available). */
   exports: string[];
+  /**
+   * Named exports read from the installed package, for a package whose API changes
+   * between releases; replaces `exports` when present. Called once at Vite config time
+   * with the project root and platform. `null` means the package is not installed, so
+   * the module is not shadowed at all.
+   */
+  exportsFor?: (context: { projectRoot: string; platform: "ios" | "android" }) => string[] | null;
 }
 
 export interface Preset {

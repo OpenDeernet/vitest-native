@@ -5,11 +5,10 @@ import path from "node:path";
 import { VitestNativeError } from "../errors.mjs";
 import { esmExportNames } from "./esm-export-names.js";
 
-// @shopify/react-native-skia draws through a JSI binding to Skia's C++, which throws
-// at import in Node ("Native Skia Module failed to correctly install JSI Bindings").
-// Skia supports tests itself: its jestEnv.js loads CanvasKit, Skia compiled to
-// WebAssembly, and its jestSetup.js mocks the package with
-// `require("@shopify/react-native-skia/lib/module/mock").Mock(global.CanvasKit)`.
+// Skia draws through a JSI binding to its C++, which throws at import in Node
+// ("Native Skia Module failed to correctly install JSI Bindings"). Skia supports tests
+// itself: its jestEnv.js loads CanvasKit, Skia compiled to WebAssembly, and its
+// jestSetup.js mocks the package with `require("<skia>/lib/module/mock").Mock(global.CanvasKit)`.
 // That is the JS Skia API backed by real Skia, so paths, matrices, colours and
 // pictures compute as on a device, with the native views (Canvas, SkiaPictureView)
 // as React Native Views. This preset does the same: prepare() loads CanvasKit, and
@@ -21,90 +20,96 @@ import { esmExportNames } from "./esm-export-names.js";
 //   one throws ("Cannot pass "undefined" as a sk_sp<Typeface>"); a device returns a
 //   font of the requested size, so this returns Skia's default typeface at that size,
 //   as the mock's own useFont() does.
-// The named exports are the installed version's, read from its ESM build (see
-// esm-export-names.ts): its API changes between versions (3.0 added Graphite, and
-// later 3.x releases removed the video APIs), so a fixed list would hold for one. The mock's names
-// that the real package does not export (hooks from earlier releases) stay on the
-// module object, as under Jest, but are not named exports.
 //
-// Skia is published as `react-native-skia` from 2.15.0 and `@shopify/react-native-skia`
-// up to 2.14.0. The preset shadows both, each from its own installed copy.
+// Skia is published as `react-native-skia` from 2.15.0 and as
+// `@shopify/react-native-skia` up to 2.14.0. The preset shadows whichever of the two
+// the project has installed, each from its own copy; a name that is not installed
+// stays unresolvable, as it is in the app.
+//
+// The named exports are the installed version's, read from its ESM build (see
+// esm-export-names.ts), because Skia's API changes between releases: 2.15.0 added
+// SkiaGraphiteView, and 3.0.5 removed useVideo and the native-buffer helpers. The
+// mock's names that the real package does not export (hooks from earlier releases)
+// stay on the module object, as under Jest, but are not named exports.
 //
 // CanvasKit is loaded from the installed Skia's own dependency (canvaskit-wasm is
-// Skia's, not the app's, and an isolated layout such as pnpm's does not hoist it).
-// Its WebAssembly is compiled once per worker and instantiated for each test file,
-// which costs a few milliseconds. Synchronous instantiation is not an option:
-// Emscripten attaches most of CanvasKit's API (Path, Paint, Font, ...) only when
-// the runtime finishes initialising, after the synchronous part returns.
+// Skia's, not the app's, and an isolated layout such as pnpm's does not hoist it),
+// the way Skia's jestEnv.js loads it, before each test file: about 15-20 ms. It
+// cannot load synchronously: Emscripten attaches most of CanvasKit's API (Path,
+// Paint, Font, ...) only when the runtime finishes initialising, after the
+// synchronous part returns.
 
 /** Skia's package names: `react-native-skia` from 2.15.0, the Shopify scope before. */
 const SKIA_PACKAGES = ["react-native-skia", "@shopify/react-native-skia"] as const;
 
-/** The installed package's directory, from the project root, or null when absent. */
-function packageDir(name: string): string | null {
+const OPT_OUT =
+  "A project whose tests do not use Skia can turn the preset off: reactNative({ presets: { skia: false } }).";
+
+/** The installed package's directory, resolved from `root`, or null when absent. */
+function packageDir(name: string, root: string): string | null {
+  let manifest: string;
   try {
-    const root = process.env.VITEST_NATIVE_PROJECT_ROOT || process.cwd();
-    return path.dirname(
-      createRequire(path.join(root, "package.json")).resolve(`${name}/package.json`),
-    );
+    manifest = createRequire(path.join(root, "package.json")).resolve(`${name}/package.json`);
   } catch {
     return null;
   }
+  // Under the mock engine, once a preset module's require() bridge is installed, a
+  // manifest that is not on disk resolves to the module's virtual id instead of
+  // throwing (cjs-bridge.ts); only a real file means the package is installed.
+  return path.isAbsolute(manifest) && fs.existsSync(manifest) ? path.dirname(manifest) : null;
 }
 
-/** Compiled once per worker: the module is immutable and every file instantiates it. */
-let compiledCanvasKit: Promise<WebAssembly.Module> | undefined;
+/** The project root in a test worker, where the plugin sets it. */
+function workerRoot(): string {
+  return process.env.VITEST_NATIVE_PROJECT_ROOT || process.cwd();
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 async function loadCanvasKit(dir: string): Promise<unknown> {
-  const skiaRequire = createRequire(path.join(dir, "package.json"));
-  // The build Skia's jestEnv.js loads.
-  const entry = skiaRequire.resolve("canvaskit-wasm/bin/full/canvaskit");
-  const CanvasKitInit = skiaRequire(entry) as (options: object) => Promise<unknown>;
-  compiledCanvasKit ??= fs.promises
-    .readFile(path.join(path.dirname(entry), "canvaskit.wasm"))
-    .then((bytes) => WebAssembly.compile(bytes));
-  const compiled = await compiledCanvasKit;
-  return CanvasKitInit({
-    // Emscripten's Module.instantiateWasm: instantiate the cached module rather than
-    // fetch and compile the file again. Returning {} marks the instantiation async.
-    instantiateWasm(
-      imports: WebAssembly.Imports,
-      done: (instance: WebAssembly.Instance, module: WebAssembly.Module) => void,
-    ) {
-      void WebAssembly.instantiate(compiled, imports).then((instance) => done(instance, compiled));
-      return {};
-    },
-  });
+  try {
+    const skiaRequire = createRequire(path.join(dir, "package.json"));
+    // The build Skia's jestEnv.js loads.
+    const CanvasKitInit = skiaRequire("canvaskit-wasm/bin/full/canvaskit") as (
+      options: object,
+    ) => Promise<unknown>;
+    return await CanvasKitInit({});
+  } catch (cause) {
+    throw new VitestNativeError(
+      "PRESET_UNAVAILABLE",
+      `the skia preset could not load CanvasKit, Skia's WebAssembly build, from ` +
+        `${dir}: ${messageOf(cause)}. ${OPT_OUT}`,
+      { cause },
+    );
+  }
 }
 
 function skiaModule(name: string): PresetModule {
-  let exports: string[] | undefined;
   return {
-    // Read when the plugin resolves its config, which is the only reader.
-    get exports() {
-      if (exports) return exports;
-      const dir = packageDir(name);
-      if (!dir) return (exports = []);
+    exports: [],
+    exportsFor({ projectRoot, platform }) {
+      const dir = packageDir(name, projectRoot);
+      if (!dir) return null;
       try {
-        exports = esmExportNames(path.join(dir, "lib/module/index.js"));
+        return esmExportNames(path.join(dir, "lib/module/index.js"), platform);
       } catch (cause) {
         throw new VitestNativeError(
           "PRESET_UNAVAILABLE",
-          `the skia preset could not read the named exports of the installed '${name}' ` +
-            `from its ESM build (${dir}/lib/module). A test that does not use Skia can ` +
-            `run without the preset: reactNative({ presets: { skia: false } }).`,
+          `the skia preset could not read the named exports of '${name}' from its ESM ` +
+            `build in ${dir}: ${messageOf(cause)}. ${OPT_OUT}`,
           { cause },
         );
       }
-      return exports;
     },
     factory: () => {
-      const dir = packageDir(name);
+      const dir = packageDir(name, workerRoot());
       if (!dir) {
         throw new VitestNativeError(
           "PRESET_UNAVAILABLE",
           `the skia preset's mock for '${name}' needs '${name}' installed, and it does ` +
-            `not resolve from the project root.`,
+            `not resolve from ${workerRoot()}.`,
         );
       }
       const CanvasKit = (globalThis as any).CanvasKit;
@@ -144,8 +149,15 @@ export function skia(): Preset {
     name: "skia",
     async prepare() {
       // A project has one of the two installed; CanvasKit is that copy's dependency.
-      const dir = SKIA_PACKAGES.map(packageDir).find((d) => d !== null);
-      if (!dir) return;
+      const root = workerRoot();
+      const dir = SKIA_PACKAGES.map((name) => packageDir(name, root)).find((d) => d !== null);
+      if (!dir) {
+        throw new VitestNativeError(
+          "PRESET_UNAVAILABLE",
+          `the skia preset is enabled, and neither ${SKIA_PACKAGES.join(" nor ")} ` +
+            `resolves from ${root}. ${OPT_OUT}`,
+        );
+      }
       (globalThis as any).CanvasKit = await loadCanvasKit(dir);
     },
     modules: Object.fromEntries(SKIA_PACKAGES.map((name) => [name, skiaModule(name)])),

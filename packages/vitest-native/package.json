@@ -111,6 +111,7 @@
   },
   "sideEffects": [
     "./dist/setup.mjs",
+    "./dist/preset-ready.mjs",
     "./dist/jest-compat/setup.mjs",
     "./dist/native/*.mjs"
   ],

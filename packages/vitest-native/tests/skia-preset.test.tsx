@@ -1,10 +1,10 @@
 /**
  * The skia preset under the mock engine, zero-config: Skia is a devDependency under
  * both its names (`react-native-skia` 3.x, `@shopify/react-native-skia` 2.14), so the
- * preset is auto-detected. Its module needs CanvasKit, which
- * loads asynchronously; the mock engine's setup cannot await (it is also built as
- * CommonJS), so the virtual module for the package awaits the preparation instead.
- * The native engine's coverage is tests-native/skia.test.tsx.
+ * preset is auto-detected. Its module needs CanvasKit, which loads asynchronously;
+ * the mock engine's second setup file (preset-ready.mjs) awaits it before any user
+ * setup file or test file loads. The native engine's coverage is
+ * tests-native/skia.test.tsx.
  */
 import fs from "node:fs";
 import { createRequire } from "node:module";
@@ -13,60 +13,132 @@ import path from "node:path";
 import React from "react";
 import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react-native";
+import * as skia2 from "@shopify/react-native-skia";
 import { Canvas, Circle, Skia, matchFont } from "@shopify/react-native-skia";
 import * as skia3 from "react-native-skia";
+import { reactNative } from "../src/index.js";
 import { AUTO_DETECT_PRESETS, PRESET_MODULES } from "../src/preset-map.js";
-import { untilPrepared } from "../src/preset-preparation.js";
 import * as presets from "../src/presets/index.js";
+import { esmExportNames } from "../src/presets/esm-export-names.js";
 import { skia } from "../src/presets/skia.js";
+import { runPluginConfig } from "./plugin-config.js";
 
 const SKIA = "@shopify/react-native-skia";
 const SKIA_PACKAGES = ["react-native-skia", "@shopify/react-native-skia"];
 
+/** The names the installed package's ESM build exports, read independently. */
+function installedNames(name: string): string[] {
+  const dir = path.dirname(createRequire(import.meta.url).resolve(`${name}/package.json`));
+  return esmExportNames(path.join(dir, "lib/module/index.js"));
+}
+
+/** A project with only a stand-in for Skia 2.14 under its Shopify name installed. */
+function shopifyOnlyProject(): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vn-skia-only-shopify-"));
+  const dir = path.join(root, "node_modules", SKIA);
+  fs.mkdirSync(path.join(dir, "lib/module"), { recursive: true });
+  fs.writeFileSync(path.join(root, "package.json"), '{"name":"app"}');
+  fs.writeFileSync(path.join(dir, "package.json"), `{"name":"${SKIA}","version":"2.14.0"}`);
+  fs.writeFileSync(
+    path.join(dir, "lib/module/index.js"),
+    'export { Canvas } from "./canvas"; export const Skia = {};',
+  );
+  fs.writeFileSync(path.join(dir, "lib/module/canvas.js"), "export const Canvas = 1;");
+  return root;
+}
+
 describe("skia preset: wiring", () => {
-  it("is auto-detected for both of Skia's names and shadows exactly them", () => {
+  it("is auto-detected for both of Skia's names and can shadow exactly them", () => {
     for (const name of SKIA_PACKAGES) expect(AUTO_DETECT_PRESETS[name]).toBe("skia");
     expect(Object.keys(skia().modules)).toEqual(SKIA_PACKAGES);
     expect([...PRESET_MODULES.skia]).toEqual(SKIA_PACKAGES);
   });
 
-  it("names exactly the installed version's exports, each of which its mock provides", () => {
-    const preset = skia();
-    for (const name of SKIA_PACKAGES) {
-      const module = preset.modules[name];
-      const built = module.factory();
-      expect(module.exports.length, name).toBeGreaterThan(200);
+  it("imports exactly each installed version's exports, each of which its mock provides", () => {
+    for (const [name, ns] of [
+      ["react-native-skia", skia3],
+      [SKIA, skia2],
+    ] as const) {
+      const names = Object.keys(ns).filter((n) => n !== "default");
+      expect(names.sort(), name).toEqual(installedNames(name));
+      const values = ns as Record<string, unknown>;
       expect(
-        module.exports.filter((n) => !(n in built)),
+        names.filter((n) => values[n] === undefined),
         name,
       ).toEqual([]);
     }
-    // 3.0 added SkiaGraphiteView, so a list read from one version is wrong for the other.
-    expect(preset.modules["react-native-skia"].exports).toContain("SkiaGraphiteView");
-    expect(preset.modules[SKIA].exports).not.toContain("SkiaGraphiteView");
+    // 2.15.0 added SkiaGraphiteView, so a list read from one version is wrong for the other.
+    expect("SkiaGraphiteView" in skia3).toBe(true);
+    expect("SkiaGraphiteView" in skia2).toBe(false);
+  });
+
+  it("builds its module before user setup files run", () => {
+    expect((globalThis as any).__vnSkiaMockAtUserSetup).toBe(true);
+  });
+
+  it("reads the names from the project root, and shadows only the name installed there", async () => {
+    // This repository, the working directory, has both names installed; the project
+    // has only the Shopify one, whose stand-in exports two names.
+    const root = shopifyOnlyProject();
+    // The plugin's required peers, linked from this repository's install.
+    for (const peer of ["vitest", "vite", "react"]) {
+      const target = path.dirname(createRequire(import.meta.url).resolve(`${peer}/package.json`));
+      fs.symlinkSync(target, path.join(root, "node_modules", peer), "junction");
+    }
+    const plugin = reactNative({ engine: "mock", presets: [skia()] }) as any;
+    await runPluginConfig(plugin, { root }, { command: "serve", mode: "test" });
+    await plugin.configResolved({ root });
+    const id = plugin.resolveId(SKIA, undefined);
+    expect(id).toBe(`\0virtual:preset:${SKIA}`);
+    const code: string = plugin.load(id);
+    expect(code.match(/export const \w+/g)).toEqual(["export const Canvas", "export const Skia"]);
+    expect(plugin.resolveId("react-native-skia", undefined)).toBeUndefined();
   });
 
   it("keeps every preset's export names within one Windows environment variable", () => {
-    // The plugin passes them to native workers as VITEST_NATIVE_PRESET_EXPORTS, and
-    // Windows caps a variable at 32,767 characters. Every preset active is the worst case.
-    const all: Record<string, string[]> = {};
+    // The plugin passes them to workers as VITEST_NATIVE_PRESET_EXPORTS, and Windows
+    // caps a variable at 32,767 characters. Every preset active is the worst case.
+    const all: Record<string, string[] | null> = {};
     for (const factory of Object.values(presets)) {
-      for (const [name, module] of Object.entries(factory().modules)) all[name] = module.exports;
+      for (const [name, module] of Object.entries(factory().modules)) {
+        all[name] = module.exportsFor
+          ? module.exportsFor({ projectRoot: process.cwd(), platform: "ios" })
+          : module.exports;
+      }
     }
     expect(JSON.stringify(all).length).toBeLessThan(24_000);
   });
 
   it("says what to do when it cannot read the installed version's exports", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vn-skia-layout-"));
-    const dir = path.join(root, "node_modules/react-native-skia");
-    fs.mkdirSync(path.join(dir, "lib/module"), { recursive: true });
+    const root = shopifyOnlyProject();
+    fs.writeFileSync(
+      path.join(root, "node_modules", SKIA, "lib/module/index.js"),
+      'export * from "./moved";',
+    );
+    expect(() => skia().modules[SKIA].exportsFor!({ projectRoot: root, platform: "ios" })).toThrow(
+      /could not read the named exports of '@shopify\/react-native-skia'[\s\S]*cannot resolve '\.\/moved'[\s\S]*presets: \{ skia: false \}/,
+    );
+  });
+
+  it("says what to do when CanvasKit cannot load", async () => {
+    // The stand-in has no canvaskit-wasm beside it.
+    vi.stubEnv("VITEST_NATIVE_PROJECT_ROOT", shopifyOnlyProject());
+    try {
+      await expect(skia().prepare!()).rejects.toThrow(
+        /could not load CanvasKit[\s\S]*canvaskit-wasm[\s\S]*presets: \{ skia: false \}/,
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("says so when it is enabled and Skia is not installed", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vn-skia-none-"));
     fs.writeFileSync(path.join(root, "package.json"), "{}");
-    fs.writeFileSync(path.join(dir, "package.json"), '{"name":"react-native-skia"}');
-    fs.writeFileSync(path.join(dir, "lib/module/index.js"), 'export * from "./moved";');
     vi.stubEnv("VITEST_NATIVE_PROJECT_ROOT", root);
     try {
-      expect(() => skia().modules["react-native-skia"].exports).toThrow(
-        /could not read the named exports of the installed 'react-native-skia'[\s\S]*presets: \{ skia: false \}/,
+      await expect(skia().prepare!()).rejects.toThrow(
+        /neither react-native-skia nor @shopify\/react-native-skia resolves/,
       );
     } finally {
       vi.unstubAllEnvs();
@@ -107,30 +179,9 @@ describe("skia preset under the mock engine", () => {
     expect(skia3.SkiaGraphiteView).toBeDefined();
   });
 
-  it("answers require() with the same module once prepared", () => {
+  it("answers require() with the same module", () => {
     const required = createRequire(import.meta.url)(SKIA);
     expect(required.Skia).toBe(Skia);
     expect(required.Canvas).toBe(Canvas);
-  });
-});
-
-describe("untilPrepared", () => {
-  it("names the package and the fix before the module exists", () => {
-    const module = untilPrepared("some-package", () => undefined);
-    expect(() => module.anything).toThrow(
-      /'some-package' was required before its preset finished preparing/,
-    );
-  });
-
-  it("forwards reads, writes and key queries once the module exists", () => {
-    let built: Record<string, any> | undefined;
-    const module = untilPrepared("some-package", () => built);
-    built = { a: 1 };
-    expect(module.a).toBe(1);
-    module.b = 2;
-    expect(built.b).toBe(2);
-    expect("a" in module).toBe(true);
-    expect(Object.keys(module)).toEqual(["a", "b"]);
-    expect({ ...module }).toEqual({ a: 1, b: 2 });
   });
 });
