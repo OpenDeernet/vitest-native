@@ -145,8 +145,10 @@ for (const name of presetNames) {
   if (shadows && typeof preset.prepare === "function") presetPreparations.push(preset.prepare());
 }
 // A preset's async preparation (the skia preset loads CanvasKit) completes before any
-// test file imports, so its mock can be built synchronously on first use.
-await Promise.all(presetPreparations);
+// test file imports, so its mock can be built synchronously on first use. The promise
+// is published under the same name as the mock engine's (setup.ts).
+globalThis.__vitest_native_presets_ready = Promise.all(presetPreparations);
+await globalThis.__vitest_native_presets_ready;
 
 // Preset-shadowed packages join the Node-side transform set. Their bare and
 // subpath imports are redirected to the preset mock before any file loads, so the

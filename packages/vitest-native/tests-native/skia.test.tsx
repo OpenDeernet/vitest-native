@@ -25,7 +25,8 @@ import * as skia2 from "@shopify/react-native-skia";
 import * as skia3 from "react-native-skia";
 
 describe("Skia (preset, native engine)", () => {
-  it("has CanvasKit loaded before user setup files run", () => {
+  it("finishes preparing the preset before user setup files run", () => {
+    expect((globalThis as any).__vnPresetsSettledAtUserSetup).toBe(true);
     expect((globalThis as any).__vnCanvasKitAtUserSetup).toBe(true);
   });
 

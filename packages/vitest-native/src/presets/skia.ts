@@ -34,9 +34,9 @@ import { esmExportNames } from "./esm-export-names.js";
 //
 // CanvasKit is loaded from the installed Skia's own dependency (canvaskit-wasm is
 // Skia's, not the app's, and an isolated layout such as pnpm's does not hoist it),
-// the way Skia's jestEnv.js loads it, before each test file: about 15-20 ms. It
-// cannot load synchronously: Emscripten attaches most of CanvasKit's API (Path,
-// Paint, Font, ...) only when the runtime finishes initialising, after the
+// the way Skia's jestEnv.js loads it, before each test file: about 20-30 ms in a fresh
+// worker. It cannot load synchronously: Emscripten attaches most of CanvasKit's API
+// (Path, Paint, Font, ...) only when the runtime finishes initialising, after the
 // synchronous part returns.
 
 /** Skia's package names: `react-native-skia` from 2.15.0, the Shopify scope before. */
@@ -134,7 +134,8 @@ function skiaModule(name: string): PresetModule {
       const { Mock } = skiaRequire("./lib/commonjs/mock") as {
         Mock: (canvasKit: unknown) => Record<string, any>;
       };
-      // Mock() sets global.SkiaApi, which the Reanimated helpers read on load.
+      // Mock() sets global.SkiaApi, which the Reanimated helpers read on load. The
+      // mock's own placeholders for some helpers (useClock, ...) win, as under Jest.
       const mock = Mock(CanvasKit);
       const reanimatedHelpers = skiaRequire("./lib/commonjs/external/reanimated");
       const realMatchFont = mock.matchFont;
@@ -142,8 +143,8 @@ function skiaModule(name: string): PresetModule {
         ...reanimatedHelpers,
         ...mock,
         // skia/core/Font.ts: `fontSize` defaults to 14. A font manager the test
-        // supplies (from useFonts or Skia.TypefaceFontProvider) has fonts, so
-        // the real lookup runs against it.
+        // supplies (such as a Skia.TypefaceFontProvider) has fonts, so the real
+        // lookup runs against it.
         matchFont: (style: { fontSize?: number } = {}, fontMgr?: unknown) =>
           fontMgr === undefined
             ? mock.Skia.Font(undefined, style.fontSize ?? 14)

@@ -50,11 +50,13 @@ and removing or renaming one is a major.
 The `Preset` and `PresetModule` types are a public extension point: third-party presets can be
 written and passed to `presets: [...]`. Covered: the shape `{ name, modules, config? }`, that
 `PresetModule.exports` is read at config time, and that `PresetModule.factory` is called only
-inside a Vitest worker. Also covered: the optional `Preset.prepare()`, which completes before
-any of the user's setup files or test files load, and the optional `PresetModule.exportsFor()`,
-which is called once at config time with `{ projectRoot, platform }` and returns the named
-exports read from the installed package, or `null` when it is not installed, in which case
-that module is not shadowed.
+inside a Vitest worker.
+
+The optional `Preset.prepare()` and `PresetModule.exportsFor()`, which the built-in skia preset
+uses, are not yet covered for third-party presets. `prepare()` completes before any of the
+user's setup files or test files load. `exportsFor()` is called once at config time with
+`{ projectRoot, platform }` and returns the named exports read from the installed package, or
+`null` when it is not installed, in which case that module is not shadowed.
 
 `factory` may gain optional parameters in a minor, since that does not break an existing
 zero-argument factory. Its return type and call site will not change without a major.

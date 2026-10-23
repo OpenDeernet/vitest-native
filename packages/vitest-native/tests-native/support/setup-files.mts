@@ -12,6 +12,8 @@ import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 
 export const NATIVE_SUITE_SETUP_FILES = [
-  path.resolve(here, "../../dist/jest-compat/setup.mjs"),
+  // First, straight after vitest-native's own: a setup file between them would give
+  // a preparation the setup did not wait for time to finish anyway.
   path.resolve(here, "preset-readiness.setup.ts"),
+  path.resolve(here, "../../dist/jest-compat/setup.mjs"),
 ];
