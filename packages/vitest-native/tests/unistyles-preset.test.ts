@@ -616,7 +616,7 @@ describe("unistyles preset: across a mock reset", () => {
     const m = moduleFor();
     m.StyleSheet.configure({ themes, settings: { adaptiveThemes: true } });
     const first = await render(React.createElement(Probe, { m }));
-    first.unmount();
+    await first.unmount();
     resetAllMocks();
     await render(React.createElement(Probe, { m }));
     try {
@@ -629,7 +629,8 @@ describe("unistyles preset: across a mock reset", () => {
 
   it("resets without re-rendering a component that is still mounted", async () => {
     // A reset in afterEach runs before the test's components unmount, and a render
-    // outside act() there warns in every test.
+    // outside act() there warns in every test. Inside act(), any update the reset
+    // schedules is rendered before act() returns, so the count does not depend on timing.
     const m = moduleFor();
     m.StyleSheet.configure({ themes, settings: { initialTheme: "light" } });
     let renders = 0;
@@ -638,13 +639,12 @@ describe("unistyles preset: across a mock reset", () => {
       const { theme } = m.useUnistyles();
       return React.createElement(Text, null, theme.colors.text);
     }
-    const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
     await render(React.createElement(Counted));
-    await settle();
     const before = renders;
-    m._reset();
-    await settle();
+    await act(() => m._reset());
     expect(renders).toBe(before);
+    await act(() => m.UnistylesRuntime.setTheme("dark"));
+    expect(renders).toBeGreaterThan(before);
   });
 });
 
