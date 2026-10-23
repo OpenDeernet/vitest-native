@@ -13,6 +13,7 @@ import { validateOptions, validatePeerDependency, warnUnknownOptions } from "./v
 import { PEER_REQUIREMENTS } from "./peer-requirements.js";
 import { VitestNativeError, VitestNativeTypeError } from "./errors.mjs";
 import { presetFromModule } from "./preset-modules.mjs";
+import { BUILT_IN_PRESET } from "./presets/built-in.js";
 import { serializableAliases } from "./jest-compat/aliases.mjs";
 import { tsconfigPathAliases } from "./native/tsconfig-paths.mjs";
 import { fsModuleCacheKey, shouldDefaultFsModuleCache } from "./fs-module-cache.js";
@@ -473,16 +474,17 @@ async function resolveOptions(
 
   // An array replaces auto-detection; an object keeps it and switches named presets
   // off; omitting it auto-detects everything.
-  let presets: Preset[];
-  if (Array.isArray(options.presets)) {
-    const root = projectRoot ?? process.cwd();
-    const { builtIn, modulePaths } = splitPresets(options.presets, root);
-    presets = [...builtIn, ...(await loadPresetModules(modulePaths, root))];
+  const root = projectRoot ?? process.cwd();
+  const { listed, modulePaths } = selectPresets(options.presets, root);
+  let builtIn: Preset[];
+  if (listed) {
+    builtIn = listed;
   } else {
-    const detected = await autoDetectPresets(diagnostics, projectRoot ?? process.cwd());
+    const detected = await autoDetectPresets(diagnostics, root);
     const disabled = disabledPresetNames(options.presets);
-    presets = disabled.size > 0 ? detected.filter((p) => !disabled.has(p.name)) : detected;
+    builtIn = disabled.size > 0 ? detected.filter((p) => !disabled.has(p.name)) : detected;
   }
+  const presets = [...builtIn, ...(await loadPresetModules(modulePaths, root))];
 
   return {
     platform,
@@ -780,41 +782,89 @@ export function alignLegacyFieldsWithNode(
   return nodeFile;
 }
 
+/** What the `presets` option selects, read once per project root. */
+export interface PresetSelection {
+  /** vitest-native's presets an array lists, or null when auto-detection chooses them. */
+  listed: Preset[] | null;
+  /** The project's own preset modules, as absolute paths (see preset-modules.mjs). */
+  modulePaths: string[];
+}
+
 /**
- * An explicit `presets` array, split into vitest-native's own presets, which each
- * worker rebuilds by name, and preset module paths, which each worker imports (see
- * preset-modules.mjs), resolved against the project root. A preset object of the
- * project's own cannot reach the workers, so it is refused here, naming the fix; it
- * used to shadow its packages with modules whose every export was undefined.
+ * The `presets` option, read. An array lists vitest-native's presets, which each worker
+ * rebuilds by name, and preset module paths. An object keeps auto-detection: `false`
+ * switches a preset off, and a key that is not one of vitest-native's names, set to
+ * `true`, adds a preset module. Paths resolve against the project root.
  */
-export function splitPresets(
-  list: readonly (Preset | string)[],
+export function selectPresets(
+  option: VitestNativeOptions["presets"],
   root: string,
-): { builtIn: Preset[]; modulePaths: string[] } {
-  const builtIn: Preset[] = [];
+): PresetSelection {
+  if (Array.isArray(option)) {
+    const listed: Preset[] = [];
+    const modulePaths: string[] = [];
+    for (const entry of option as unknown[]) {
+      if (typeof entry === "string") modulePaths.push(resolvePresetModule(entry, root));
+      else listed.push(listedBuiltInPreset(entry));
+    }
+    return { listed, modulePaths };
+  }
   const modulePaths: string[] = [];
-  for (const entry of list) {
-    if (typeof entry === "string") {
-      modulePaths.push(resolvePresetModule(entry, root));
-    } else if (entry === null || typeof entry !== "object" || typeof entry.name !== "string") {
-      throw new VitestNativeTypeError(
-        "INVALID_OPTION",
-        `Each entry of "presets" must be a preset (presets.reanimated(), ...) or the path of a ` +
-          `preset module; received ${JSON.stringify(entry)}.`,
-      );
-    } else if (entry.name in PRESET_MODULES) {
-      builtIn.push(entry);
-    } else {
-      throw new VitestNativeTypeError(
-        "INVALID_OPTION",
-        `The preset '${entry.name}' is not one of vitest-native's, and a preset object ` +
-          `cannot reach the test workers, which build each preset's modules. Default-export ` +
-          `it (or a function returning it) from a module, and list that module's path ` +
-          `instead: presets: ['./test/presets/${entry.name}.ts'].`,
-      );
+  if (option !== null && typeof option === "object") {
+    for (const [key, enabled] of Object.entries(option)) {
+      if (enabled === true && !Object.hasOwn(PRESET_MODULES, key)) {
+        modulePaths.push(resolvePresetModule(key, root));
+      }
     }
   }
-  return { builtIn, modulePaths };
+  return { listed: null, modulePaths };
+}
+
+/**
+ * An array entry that is not a path: one of vitest-native's presets, exactly as its
+ * factory returned it. Workers rebuild these by name, so anything else (a preset of the
+ * project's own, or a built-in one copied or changed) would not reach them; it used to
+ * shadow its packages with modules whose every export was undefined.
+ */
+function listedBuiltInPreset(entry: unknown): Preset {
+  if (typeof entry === "function") {
+    throw new VitestNativeTypeError(
+      "INVALID_OPTION",
+      `An entry of "presets" is the preset factory ${entry.name || "(anonymous)"} itself; ` +
+        `call it: presets.${entry.name || "<name>"}().`,
+    );
+  }
+  const preset = entry as Preset & { [BUILT_IN_PRESET]?: string };
+  if (preset === null || typeof preset !== "object" || typeof preset.name !== "string") {
+    throw new VitestNativeTypeError(
+      "INVALID_OPTION",
+      `Each entry of "presets" must be a preset (presets.reanimated(), ...) or the path of a ` +
+        `preset module; received ${JSON.stringify(entry)}.`,
+    );
+  }
+  const name = preset.name;
+  if (!Object.hasOwn(PRESET_MODULES, name)) {
+    throw new VitestNativeTypeError(
+      "INVALID_OPTION",
+      `The preset '${name}' is not one of vitest-native's, and a preset object ` +
+        `cannot reach the test workers, which build each preset's modules. Default-export ` +
+        `it (or a function returning it) from a module, and list that module's path ` +
+        `instead: presets: ['./test/presets/${name}.ts'].`,
+    );
+  }
+  const own = (PRESET_MODULES as Record<string, readonly string[]>)[name]!;
+  const modules =
+    preset.modules !== null && typeof preset.modules === "object" ? preset.modules : {};
+  if (preset[BUILT_IN_PRESET] !== name || !Object.keys(modules).every((m) => own.includes(m))) {
+    throw new VitestNativeTypeError(
+      "INVALID_OPTION",
+      `This '${name}' preset is not the one presets.${name}() returns: it is a copy, or its ` +
+        `modules were added to or changed. The test workers rebuild vitest-native's presets ` +
+        `by name, so the changes would not reach them. List presets.${name}() as it is, and ` +
+        `put modules of your own in a preset module with a name of its own, listed by path.`,
+    );
+  }
+  return preset;
 }
 
 function resolvePresetModule(specifier: string, root: string): string {
@@ -828,12 +878,19 @@ function resolvePresetModule(specifier: string, root: string): string {
     }
     return file;
   }
+  // A package name resolves as require() resolves it. Its entry is then imported as an
+  // ES module (loadPresetModules), so a package whose `exports` offer only `import`
+  // does not resolve here; its file's path does.
   try {
     return createRequire(path.join(root, "package.json")).resolve(specifier);
   } catch (cause) {
+    const notExported = (cause as { code?: string }).code === "ERR_PACKAGE_PATH_NOT_EXPORTED";
     throw new VitestNativeTypeError(
       "INVALID_OPTION",
-      `The preset module '${specifier}' does not resolve from ${root}.`,
+      `The preset module '${specifier}' does not resolve from ${root}` +
+        (notExported
+          ? `: its package exports no entry for require(). List the preset file's path instead.`
+          : `. vitest-native's own presets are named ${Object.keys(PRESET_MODULES).join(", ")}.`),
       { cause },
     );
   }
@@ -870,27 +927,46 @@ async function loadPresetModules(files: string[], root: string): Promise<Preset[
   for (const file of files) {
     // configFile: false, so the project's own Vite config (which lists this plugin)
     // is not loaded again to import one module.
-    const { module } = await runnerImport(file, {
-      root,
-      configFile: false,
-      logLevel: "error",
-      plugins: [presetModuleReactNative],
-      // A bare import is otherwise handed to Node before any plugin resolves it.
-      // `resolve.noExternal` is Vite 8's spelling for every environment;
-      // `ssr.noExternal` is Vite 6 and 7's.
-      resolve: { noExternal: [REACT_NATIVE_IMPORT] },
-      ssr: { noExternal: [REACT_NATIVE_IMPORT] },
-    } as Parameters<typeof runnerImport>[1]);
+    let module: unknown;
+    try {
+      ({ module } = await runnerImport(file, {
+        root,
+        configFile: false,
+        logLevel: "error",
+        plugins: [presetModuleReactNative],
+        // A bare import is otherwise handed to Node before any plugin resolves it.
+        // `resolve.noExternal` is Vite 8's spelling for every environment;
+        // `ssr.noExternal` is Vite 6 and 7's.
+        resolve: { noExternal: [REACT_NATIVE_IMPORT] },
+        ssr: { noExternal: [REACT_NATIVE_IMPORT] },
+      } as Parameters<typeof runnerImport>[1]));
+    } catch (cause) {
+      throw new VitestNativeError(
+        "INVALID_OPTION",
+        `The preset module ${file} could not be imported while the plugin read its preset: ` +
+          `${cause instanceof Error ? cause.message : String(cause)}\n` +
+          `The plugin imports it in Node, with only react-native stood in, before any test ` +
+          `runs. It must be an ES module (export default), and anything else React Native ` +
+          `needs (another React Native library, the app's code) belongs inside its ` +
+          `factories, which run in the test workers.`,
+        { cause },
+      );
+    }
     presets.push(presetFromModule(module, file) as unknown as Preset);
   }
-  const builtInNames = new Set(Object.keys(PRESET_MODULES));
   const seen = new Set<string>();
   for (const preset of presets) {
-    if (builtInNames.has(preset.name) || seen.has(preset.name)) {
+    if (Object.hasOwn(PRESET_MODULES, preset.name)) {
       throw new VitestNativeTypeError(
         "INVALID_OPTION",
-        `Two presets are named '${preset.name}'. A preset module's preset needs a name of ` +
-          `its own, distinct from vitest-native's presets and from the other modules'.`,
+        `A preset module's preset is named '${preset.name}', which is one of vitest-native's ` +
+          `presets. It needs a name of its own.`,
+      );
+    }
+    if (seen.has(preset.name)) {
+      throw new VitestNativeTypeError(
+        "INVALID_OPTION",
+        `Two preset modules' presets are named '${preset.name}'. Each needs a name of its own.`,
       );
     }
     seen.add(preset.name);
@@ -1621,23 +1697,22 @@ export function reactNative(options?: VitestNativeOptions): Plugin {
         // native setup file via env; it builds the mocks in-worker. The actual
         // import redirection happens in resolveId/load (virtual:preset modules).
         const disabledNative = disabledPresetNames(options?.presets);
-        const nativePresetNames = Array.isArray(options?.presets)
-          ? splitPresets(options.presets, resolvedRoot).builtIn.map((p) => p.name)
+        const selection = selectPresets(options?.presets, resolvedRoot);
+        const nativePresetNames = selection.listed
+          ? selection.listed.map((p) => p.name)
           : autoDetectPresetNames(resolvedRoot, diagnostics).filter((n) => !disabledNative.has(n));
         if (nativePresetNames.length > 0) {
           env.VITEST_NATIVE_PRESET_NAMES = JSON.stringify(nativePresetNames);
         }
-        if (Array.isArray(options?.presets)) {
-          const { modulePaths } = splitPresets(options.presets, resolvedRoot);
-          if (modulePaths.length > 0)
-            env.VITEST_NATIVE_PRESET_MODULES = JSON.stringify(modulePaths);
+        if (selection.modulePaths.length > 0) {
+          env.VITEST_NATIVE_PRESET_MODULES = JSON.stringify(selection.modulePaths);
         }
         // Per-preset config (e.g. navigation({ defaultRouteParams })) must travel to
         // the worker, where presets are rebuilt from their name. Only explicitly
         // configured presets carry config; auto-detected ones use their defaults.
-        if (Array.isArray(options?.presets)) {
+        if (selection.listed) {
           const presetConfig: Record<string, Record<string, unknown>> = {};
-          for (const p of splitPresets(options.presets, resolvedRoot).builtIn) {
+          for (const p of selection.listed) {
             if (p.config && Object.keys(p.config).length > 0) presetConfig[p.name] = p.config;
           }
           if (Object.keys(presetConfig).length > 0) {
@@ -1894,10 +1969,12 @@ export function reactNative(options?: VitestNativeOptions): Plugin {
       // object form keeps detection — the worker does that itself — and only needs to
       // know which names to drop. `resolved` is not assigned until configResolved,
       // so neither branch can read it here.
-      if (Array.isArray(options?.presets)) {
-        const { builtIn, modulePaths } = splitPresets(options.presets, resolvedRoot);
-        env.VITEST_NATIVE_PRESET_NAMES = JSON.stringify(builtIn.map((p) => p.name));
-        if (modulePaths.length > 0) env.VITEST_NATIVE_PRESET_MODULES = JSON.stringify(modulePaths);
+      const selection = selectPresets(options?.presets, resolvedRoot);
+      if (selection.modulePaths.length > 0) {
+        env.VITEST_NATIVE_PRESET_MODULES = JSON.stringify(selection.modulePaths);
+      }
+      if (selection.listed) {
+        env.VITEST_NATIVE_PRESET_NAMES = JSON.stringify(selection.listed.map((p) => p.name));
       } else {
         const disabled = disabledPresetNames(options?.presets);
         if (disabled.size > 0) {

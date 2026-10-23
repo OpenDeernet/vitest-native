@@ -272,16 +272,18 @@ export interface VitestNativeOptions {
    * way. Listing every other detected preset back by hand just to drop one is
    * both tedious and a thing that silently rots as dependencies change.
    *
-   * An array lists vitest-native's presets (`presets.reanimated()`, ...) and, as
-   * paths, preset modules of your own: a module whose default export is a `Preset`
-   * or a function returning one. A preset object of your own cannot be listed
-   * directly, because its factories run in the test workers, which a function in the
-   * config cannot reach; the plugin imports the module there instead. A relative
-   * path resolves from the project root.
+   * Preset modules of your own are listed by path: a module whose default export is a
+   * `Preset` or a function returning one. In an array they sit beside vitest-native's
+   * presets (`presets.reanimated()`, ...); in the object form a path set to `true`
+   * adds one to the auto-detected presets. A preset object of your own cannot be
+   * listed directly, because its factories run in the test workers, which a function
+   * in the config cannot reach; the plugin imports the module there instead. A
+   * relative path resolves from the project root.
    *
    * @example
    * ```ts
    * import { reactNative, presets } from 'vitest-native';
+   * reactNative({ presets: { navigation: false, './test/presets/my-lib.ts': true } })
    * reactNative({ presets: [presets.reanimated(), './test/presets/my-lib.ts'] })
    * ```
    */

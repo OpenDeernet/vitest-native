@@ -295,12 +295,15 @@ for (const file of presetModuleFiles) {
     throw new VitestNativeError(
       "PRESET_UNAVAILABLE",
       `the preset module ${file} shadows ${unread.join(", ")}, which the plugin did not ` +
-        `read while resolving its config (VITEST_NATIVE_PRESET_EXPORTS).`,
+        `read while resolving its config (VITEST_NATIVE_PRESET_EXPORTS). The plugin reads ` +
+        `preset modules once, when the run starts: restart it after changing one.`,
     );
   }
   adopt(preset);
 }
-await Promise.all(presetPreparations);
+// The preset modules' preparations join the built-in presets' (above).
+globalThis.__vitest_native_presets_ready = Promise.all(presetPreparations);
+await globalThis.__vitest_native_presets_ready;
 
 // Preset mocks are built on first use in each file, not up front. A project with
 // twenty auto-detected presets otherwise builds ~900 vi.fn() mocks for every test

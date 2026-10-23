@@ -1,6 +1,6 @@
 /**
- * A preset given as a module path (`presets: ['./zz-lib-preset.ts']`), under the
- * engine the config's --mode names. A preset object of the project's own cannot reach
+ * A preset given as a module path (`presets: { './zz-lib-preset.ts': true }`, beside
+ * auto-detection), under the engine the config's --mode names. A preset object of the project's own cannot reach
  * the test workers, so the plugin imports the module there; before, a project's own
  * preset shadowed its package with a module whose every export was undefined.
  */
@@ -22,6 +22,13 @@ it("renders its components through React Native", async () => {
   expect(screen.getByText("new")).toBeTruthy();
 });
 
-it("prepared the preset before the test file loaded", () => {
-  expect((globalThis as any).__zzLibPrepared).toBe(true);
+it("prepared the preset before the user's setup files ran", () => {
+  expect((globalThis as any).__zzLibPreparedAtUserSetup).toBe(true);
+});
+
+it("keeps the presets auto-detection chose", () => {
+  // react-native-reanimated is a devDependency here, so its preset is detected.
+  expect(
+    (globalThis as any).__vitest_native_preset_mocks?.["react-native-reanimated"],
+  ).toBeDefined();
 });

@@ -8,9 +8,21 @@
 // export names) and hands the path to the workers, which import it again and call
 // its factories there.
 //
-// Plain .mjs, shipped verbatim like errors.mjs: the plugin, the mock engine's setup
-// and the native engine's setup file all load this same file.
+// Plain .mjs, like errors.mjs: the native engine's setup file loads it as shipped, and
+// the plugin and the mock engine's setup bundle it.
 import { VitestNativeTypeError } from "./errors.mjs";
+
+// The plugin and the native loader generate `export const <name> = ...` for each named
+// export, so each must be a name a binding can have. `default` is the module object.
+const IDENTIFIER = /^[A-Za-z_$][\w$]*$/;
+const RESERVED = new Set(
+  (
+    "await break case catch class const continue debugger default delete do else enum " +
+    "export extends false finally for function if implements import in instanceof " +
+    "interface let new null package private protected public return static super switch " +
+    "this throw true try typeof var void while with yield"
+  ).split(" "),
+);
 
 /**
  * The preset a preset module exports: its default export, either a preset or a
@@ -20,6 +32,14 @@ export function presetFromModule(namespace, file) {
   const exported = namespace?.default;
   const preset = typeof exported === "function" ? exported() : exported;
   const isObject = (value) => value !== null && typeof value === "object";
+  if (typeof preset?.then === "function") {
+    throw new VitestNativeTypeError(
+      "INVALID_OPTION",
+      `The preset module ${file} default-exports an async function. The plugin reads the ` +
+        `preset synchronously; put async work in the preset's prepare(), which the test ` +
+        `workers await before any test file loads.`,
+    );
+  }
   if (
     !isObject(preset) ||
     typeof preset.name !== "string" ||
@@ -43,6 +63,18 @@ export function presetFromModule(namespace, file) {
         `The preset module ${file} declares '${moduleName}' without a factory function and ` +
           `an exports array.`,
       );
+    }
+    for (const name of presetModule.exports ?? []) {
+      if (typeof name !== "string" || !IDENTIFIER.test(name) || RESERVED.has(name)) {
+        throw new VitestNativeTypeError(
+          "INVALID_OPTION",
+          `The preset module ${file} lists ${JSON.stringify(name)} among the exports of ` +
+            `'${moduleName}'. Each must be a name a variable could have` +
+            (name === "default"
+              ? `; the default import is the whole module object the factory returns.`
+              : `.`),
+        );
+      }
     }
   }
   return preset;

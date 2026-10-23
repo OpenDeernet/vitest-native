@@ -106,7 +106,7 @@ If you're coming from Jest, you can usually **delete** your manual native-lib mo
 
 ## Your own presets
 
-A library vitest-native has no preset for can get one of yours. Write it in a module whose default export is a preset, or a function returning one, and list the module's path; a relative path resolves from the project root:
+A library vitest-native has no preset for can get one of yours. Write it in a module whose default export is a preset, or a function returning one, and add the module's path to `presets`:
 
 ```ts
 // test/presets/my-lib.ts
@@ -124,11 +124,22 @@ export default () => ({
 ```
 
 ```ts
-// vitest.config.ts
+// vitest.config.ts: beside the auto-detected presets
+reactNative({ presets: { './test/presets/my-lib.ts': true } })
+// or in a full list, which replaces auto-detection
 reactNative({ presets: [presets.reanimated(), './test/presets/my-lib.ts'] })
 ```
 
-A preset is listed as a path, not as an object, because its factories run in the test workers, and a function in the config cannot reach them; the plugin imports the module there, and once while it loads the config to read its name and export names. In that config-time import `react-native` is a stand-in, so a preset module may import it at its top level, and should use it only inside its factories. A preset object that is not one of vitest-native's is refused with this advice. Because an array replaces auto-detection, list vitest-native's presets you still want alongside yours. For one-off overrides of a preset that already exists, [`extendPresetMock`](/guide/helpers#extendpresetmock-pkg-overrides) is lighter.
+A preset is listed as a path, not as an object, because its factories run in the test workers, and a function in the config cannot reach them. The plugin imports the module once while it loads the config, to read its name and export names, and each worker imports it again. So that the config-time import works in Node:
+
+- the module is an ES module (`export default`);
+- `react-native` is a stand-in there, so the module may import it at its top level but should use it only inside its factories; anything else React Native needs (another React Native library, the app's code) is imported inside the factories;
+- an export name is a name a variable could have; the default import is the whole object the factory returns;
+- async work goes in the preset's `prepare()`, which the workers await before any setup or test file loads.
+
+A path resolves from the project root, the root each Vitest project gives Vite. A plugin shared by several projects with different roots therefore needs an absolute path, such as `fileURLToPath(new URL('./test/presets/my-lib.ts', import.meta.url))`. A package name resolves as `require()` resolves it from the root.
+
+A preset object that is not exactly what one of vitest-native's factories returned is refused with this advice, including a built-in preset copied or extended with modules of its own. For one-off overrides of a preset that already exists, [`extendPresetMock`](/guide/helpers#extendpresetmock-pkg-overrides) is lighter.
 
 ## Transitive imports
 
