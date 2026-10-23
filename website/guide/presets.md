@@ -79,6 +79,7 @@ The preset agrees with Unistyles' own Jest mock (`react-native-unistyles/mocks`)
 What differs from a device:
 
 - **Re-rendering.** A device restyles mounted views natively when the theme or the screen changes, without a React render. Here, components that use `useUnistyles()`, `withUnistyles`, `Display`, `Hide` or `ScopedTheme` re-render on a change; a component that only reads `StyleSheet.create` styles shows it on its next render.
+- **Scoped themes on a later render.** `ScopedTheme` sets its theme while its children render, as on a device. A component inside it that later re-renders on its own, after a state change, reads `StyleSheet.create` styles against the app's theme, because only the native view keeps the scope on a device. `useUnistyles()` and `withUnistyles` keep the theme in scope when they mounted, so read scoped styles through them where a test re-renders.
 - **Variants per component.** Unistyles' Babel plugin binds a `useVariants()` selection to each component, and the plugin is off under test, so the selection belongs to the stylesheet. A style read after another instance selected different variants (a `Pressable` style function, on press) sees that instance's selection.
 - **No theme selected.** With several themes and none selected, a device throws on first use, while the preset falls back to the first theme, as Unistyles' Jest mock does.
 

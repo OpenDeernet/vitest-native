@@ -10,6 +10,7 @@ A `unistyles` preset for `react-native-unistyles` 3, which resolves styles in na
 - `useUnistyles()`, `withUnistyles`, `Display`, `Hide` and `ScopedTheme` re-render on a theme or screen change;
 - `ScopedTheme` scopes a theme to its children, and `withUnistyles` applies `uniProps`;
 - `Display` and `Hide` follow `mq` against the screen size;
+- `StyleSheet.flatten`, `compose`, `absoluteFill` and `hairlineWidth` are React Native's, as on a device;
 - `resetAllMocks()` returns the theme to what `StyleSheet.configure()` set.
 
 `vitest-native migrate` now deletes a library's own test setup file (such as `react-native-unistyles/mocks`) when a detected preset shadows that library, since its `jest.mock()` calls would replace the preset.

@@ -98,18 +98,29 @@ describe("unistyles preset: agrees with the library's own Jest mock", () => {
     expect(ours.StyleSheet.absoluteFill).toEqual(official.StyleSheet.absoluteFill);
   });
 
-  it("builds the same media query strings", () => {
-    const official = officialMock();
+  it("builds the media query strings the library's own mq builds", () => {
+    // The official mock's mq returns placeholders, so the reference is the library's
+    // compiled src/mq.ts, run over the same breakpoints.
+    const file = path.join(packageDir, "lib/commonjs/mq.js");
+    const exports: Record<string, any> = {};
+    const specs = { UnistylesRuntime: { breakpoints } };
+    new Function("exports", "require", fs.readFileSync(file, "utf8"))(exports, (id: string) => {
+      if (id !== "./specs") throw new Error(`${file} requires ${id}`);
+      return specs;
+    });
+    const real = exports.mq;
     const ours = moduleFor();
-    // The official mock's mq returns placeholders; the library's own src/mq.ts is the
-    // reference for the strings, so compare against its documented format instead.
-    expect(typeof official.mq.only.width).toBe("function");
     ours.StyleSheet.configure({ themes: { light: themes.light }, breakpoints });
-    expect(ours.mq.only.width("sm", "lg")).toBe(":w[300, 800]");
-    expect(ours.mq.only.width(200)).toBe(":w[200, Infinity]");
-    expect(ours.mq.only.height(null, 600)).toBe(":h[0, 600]");
-    expect(ours.mq.width("md").and.height(100, 400)).toBe(":w[500, Infinity]:h[100, 400]");
-    expect(ours.mq.height(100).and.width("sm")).toBe(":w[300, Infinity]:h[100, Infinity]");
+    const queries: [string, (mq: any) => string][] = [
+      ["only.width(sm, lg)", (mq) => mq.only.width("sm", "lg")],
+      ["only.width(200)", (mq) => mq.only.width(200)],
+      ["only.width()", (mq) => mq.only.width()],
+      ["only.height(null, 600)", (mq) => mq.only.height(null, 600)],
+      ["only.height(unknown)", (mq) => mq.only.height("unknown")],
+      ["width(md).and.height(100, 400)", (mq) => mq.width("md").and.height(100, 400)],
+      ["height(100).and.width(sm)", (mq) => mq.height(100).and.width("sm")],
+    ];
+    for (const [name, query] of queries) expect(query(ours.mq), name).toBe(query(real));
   });
 
   it("strips variant keys from a style the way the official mock does", () => {
@@ -592,6 +603,73 @@ describe("unistyles preset: between tests", () => {
     resetAllMocks();
     expect(m.UnistylesRuntime.themeName).toBe("light");
     expect(m.UnistylesRuntime.getTheme("light")).toBe(themes.light);
+  });
+});
+
+describe("unistyles preset: across a mock reset", () => {
+  function Probe({ m }: { m: Record<string, any> }) {
+    const { theme } = m.useUnistyles();
+    return React.createElement(Text, { testID: "probe" }, theme.colors.text);
+  }
+
+  it("keeps following the colour scheme after resetAllMocks() clears React Native's listeners", async () => {
+    const m = moduleFor();
+    m.StyleSheet.configure({ themes, settings: { adaptiveThemes: true } });
+    const first = await render(React.createElement(Probe, { m }));
+    first.unmount();
+    resetAllMocks();
+    await render(React.createElement(Probe, { m }));
+    try {
+      await act(() => setColorScheme("dark"));
+      expect(screen.getByTestId("probe").props.children).toBe(themes.dark.colors.text);
+    } finally {
+      setColorScheme("light");
+    }
+  });
+
+  it("resets without re-rendering a component that is still mounted", async () => {
+    // A reset in afterEach runs before the test's components unmount, and a render
+    // outside act() there warns in every test.
+    const m = moduleFor();
+    m.StyleSheet.configure({ themes, settings: { initialTheme: "light" } });
+    let renders = 0;
+    function Counted() {
+      renders++;
+      const { theme } = m.useUnistyles();
+      return React.createElement(Text, null, theme.colors.text);
+    }
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+    await render(React.createElement(Counted));
+    await settle();
+    const before = renders;
+    m._reset();
+    await settle();
+    expect(renders).toBe(before);
+  });
+});
+
+describe("unistyles preset: StyleSheet's React Native helpers (src/specs/StyleSheet)", () => {
+  it("flattens and composes as React Native does", () => {
+    const { StyleSheet } = moduleFor();
+    expect(StyleSheet.flatten([{ a: 1 }, [{ b: 2 }, null]])).toEqual({ a: 1, b: 2 });
+    expect(StyleSheet.compose({ a: 1 }, { b: 2 })).toEqual([{ a: 1 }, { b: 2 }]);
+    expect(StyleSheet.absoluteFill).toMatchObject({ position: "absolute", top: 0, left: 0 });
+  });
+
+  it("computes hairlineWidth from the pixel ratio (HybridStyleSheet::getHairlineWidth)", () => {
+    const { PixelRatio } = require("react-native");
+    const ratio = PixelRatio.get();
+    expect(moduleFor().StyleSheet.hairlineWidth).toBe(Math.round(ratio * 0.4) / ratio || 1 / ratio);
+  });
+
+  it("refuses what the device refuses in StyleSheet.create", () => {
+    const { StyleSheet } = moduleFor();
+    expect(() => StyleSheet.create(3)).toThrow(
+      "StyleSheet.create expected to be called with object or function.",
+    );
+    expect(() => StyleSheet.create({ size: 10 })).toThrow(
+      "Unistyles: Style with name 'size' is not a function or object.",
+    );
   });
 });
 

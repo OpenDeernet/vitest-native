@@ -210,8 +210,8 @@ function variantStyles(style: Styles, selected: Variants, ctx: ParseContext): St
     const chosen = pairs.get(group);
     const key = chosen ?? "default";
     const hasKey = isObject(options) && key in options;
-    // An unselected group, or one selected with no such option, counts as "default"
-    // for compound variants.
+    // An unselected group counts as "default" for compound variants; a selected one
+    // keeps its value, whether or not it has that option.
     if (!hasKey || chosen === undefined) pairs.set(group, key);
     const styles = hasKey ? (options as Styles)[key] : undefined;
     if (isObject(styles)) Object.assign(parsed, parseSecondLevel(styles, ctx));
@@ -367,20 +367,27 @@ function buildUnistyles(): Record<string, any> {
   // A change a mounted component should see: theme, runtime, configuration.
   let version = 0;
   const listeners = new Set<() => void>();
-  let platformSubscribed = false;
   const notify = () => {
     version++;
     for (const listener of listeners) listener();
   };
   const subscribe = (listener: () => void) => {
     listeners.add(listener);
-    if (!platformSubscribed) {
-      // The device runtime reports colour scheme and dimension changes the same way.
-      platformSubscribed = true;
-      getRN().Appearance?.addChangeListener?.(notify);
-      getRN().Dimensions?.addEventListener?.("change", notify);
-    }
-    return () => listeners.delete(listener);
+    // The device runtime reports colour scheme and dimension changes too. Each
+    // subscriber listens for itself, as React Native's useColorScheme does: a single
+    // shared subscription would end at the first resetAllMocks(), which clears the
+    // mock engine's Appearance and Dimensions listeners.
+    const onPlatformChange = () => {
+      version++;
+      listener();
+    };
+    const appearance = getRN().Appearance?.addChangeListener?.(onPlatformChange);
+    const dimensions = getRN().Dimensions?.addEventListener?.("change", onPlatformChange);
+    return () => {
+      listeners.delete(listener);
+      appearance?.remove?.();
+      dimensions?.remove?.();
+    };
   };
   const useRuntimeVersion = () => React.useSyncExternalStore(subscribe, () => version);
 
@@ -576,6 +583,11 @@ function buildUnistyles(): Record<string, any> {
   // on: under test the plugin's rewrite to a re-bound `styles` is off, so code calls
   // it and then reads the same `styles`.
   const create = vi.fn((stylesheet: Styles | ((theme: Styles, rt: unknown) => Styles)) => {
+    // HybridStyleSheet::create
+    assertThat(
+      typeof stylesheet === "function" || isObject(stylesheet),
+      "StyleSheet.create expected to be called with object or function.",
+    );
     let selected: Variants = {};
     const raw = new Map<string, Styles>();
     const parsed = new Map<string, unknown>();
@@ -588,6 +600,7 @@ function buildUnistyles(): Record<string, any> {
         screen.height,
         colorScheme(),
         pixelRatio(),
+        miniRuntime.rtl,
       ].join("|");
     };
     const resolve = (key: string): Styles => {
@@ -623,7 +636,15 @@ function buildUnistyles(): Record<string, any> {
         selected = { ...variants };
       }),
     };
-    for (const name of Object.keys(resolve(stateKey()))) {
+    const initial = resolve(stateKey());
+    // Parser::buildUnistyles
+    for (const [name, value] of Object.entries(initial)) {
+      assertThat(
+        typeof value === "function" || isObject(value),
+        `Unistyles: Style with name '${name}' is not a function or object.`,
+      );
+    }
+    for (const name of Object.keys(initial)) {
       Object.defineProperty(styles, name, {
         enumerable: true,
         get() {
@@ -743,13 +764,21 @@ function buildUnistyles(): Record<string, any> {
     notify();
   });
 
-  const absoluteFill = { position: "absolute", left: 0, right: 0, top: 0, bottom: 0 };
+  // src/specs/StyleSheet: absoluteFill, flatten and compose are React Native's own.
   const StyleSheet = {
-    absoluteFill,
-    absoluteFillObject: absoluteFill,
-    hairlineWidth: 1,
-    compose: (styles: unknown) => styles,
-    flatten: (styles: unknown) => styles,
+    get absoluteFill() {
+      return getRN().StyleSheet.absoluteFill;
+    },
+    get absoluteFillObject() {
+      return getRN().StyleSheet.absoluteFill;
+    },
+    /** HybridStyleSheet::getHairlineWidth */
+    get hairlineWidth() {
+      const ratio = pixelRatio();
+      return Math.round(ratio * 0.4) / ratio || 1 / ratio;
+    },
+    compose: (a: unknown, b: unknown) => getRN().StyleSheet.compose(a, b),
+    flatten: (style: unknown) => getRN().StyleSheet.flatten(style),
     create,
     configure,
     addChangeListener: vi.fn(() => () => {}),
@@ -924,10 +953,13 @@ function buildUnistyles(): Record<string, any> {
     getServerUnistyles: () => null,
     resetServerUnistyles: () => {},
     // vitest-native's resetAllMocks(): back to what StyleSheet.configure() set.
+    // It changes the version without re-rendering: a reset in afterEach runs while the
+    // test's components are still mounted, before they unmount, and a re-render
+    // outside act() would warn in every test.
     _reset: () => {
       registry = { ...resting, themes: { ...resting.themes } };
       scopedTheme = undefined;
-      notify();
+      version++;
     },
   };
 }
