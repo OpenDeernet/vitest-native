@@ -42,6 +42,7 @@ export const AUTO_DETECT_PRESETS = {
   "@shopify/flash-list": "flashList",
   "@gorhom/bottom-sheet": "bottomSheet",
   "react-native-keyboard-controller": "keyboardController",
+  "react-native-unistyles": "unistyles",
   // Skia's name from 2.15.0 and its name before.
   "react-native-skia": "skia",
   "@shopify/react-native-skia": "skia",
@@ -159,6 +160,7 @@ export const PRESET_MODULES = {
   flashList: ["@shopify/flash-list"],
   bottomSheet: ["@gorhom/bottom-sheet"],
   keyboardController: ["react-native-keyboard-controller"],
+  unistyles: ["react-native-unistyles", "react-native-unistyles/reanimated"],
   skia: ["react-native-skia", "@shopify/react-native-skia"],
 } as const satisfies Record<PresetName, readonly string[]>;
 
