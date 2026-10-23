@@ -747,7 +747,7 @@ probe("matcher-contains-element", async () => {
 probe("not-on-screen-after-unmount", async () => {
   const view = await render(<View testID="v" />);
   const before = passes(() => expect(screen.getByTestId("v")).toBeOnTheScreen());
-  view.unmount();
+  await view.unmount();
   return { before, afterGone: screen.queryByTestId("v") === null };
 });
 
