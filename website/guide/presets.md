@@ -57,6 +57,7 @@ Presets apply under **both** engines.
 | `presets.bottomSheet()` | `@gorhom/bottom-sheet` | `BottomSheet`, `BottomSheetModal` + provider, sheet views, scroll/list variants, `BottomSheetTextInput`, backdrop, footer |
 | `presets.keyboardController()` | `react-native-keyboard-controller` | `KeyboardProvider`, `KeyboardAvoidingView`, `KeyboardAwareScrollView`, `KeyboardStickyView`, `KeyboardToolbar`; the imperative `KeyboardController` is inert |
 | `presets.unistyles()` | `react-native-unistyles`, `react-native-unistyles/reanimated` | Unistyles 3: `StyleSheet.configure`/`create` with themes, variants and compound variants, `useUnistyles`, `withUnistyles`, `UnistylesRuntime` theme switching, `mq` with `Display`/`Hide`; matches the library's own Jest mock and follows its source where that mock does less |
+| `presets.skia()` | `react-native-skia`, `@shopify/react-native-skia` | Skia's own test mock (`Mock(CanvasKit)`) over CanvasKit, Skia compiled to WebAssembly: the `Skia` API computes with real Skia, `Canvas` and its drawing render as Views; plus Skia's Reanimated helpers (`usePathValue`, `useTexture`, …) and a `matchFont` that returns a font |
 
 ## Unistyles
 
@@ -82,6 +83,18 @@ What differs from a device:
 - **Scoped themes on a later render.** `ScopedTheme` sets its theme while its children render, as on a device. A component inside it that later re-renders on its own, after a state change, reads `StyleSheet.create` styles against the app's theme, because only the native view keeps the scope on a device. `useUnistyles()` and `withUnistyles` keep the theme in scope when they mounted, so read scoped styles through them where a test re-renders.
 - **Variants per component.** Unistyles' Babel plugin binds a `useVariants()` selection to each component, and the plugin is off under test, so the selection belongs to the stylesheet. A style read after another instance selected different variants (a `Pressable` style function, on press) sees that instance's selection.
 - **No theme selected.** With several themes and none selected, a device throws on first use, while the preset falls back to the first theme, as Unistyles' Jest mock does.
+
+## Skia
+
+Skia is published as `react-native-skia` from 2.15.0 and as `@shopify/react-native-skia` up to 2.14.0; the preset shadows whichever the project has installed. It draws through a native binding that cannot load in Node, so its preset uses Skia's own test support. It loads CanvasKit (Skia compiled to WebAssembly, a dependency of Skia itself) and serves Skia's own test mock over it. The `Skia` API (paths, matrices, colours, pictures) therefore computes with real Skia, and `Canvas` and its drawing render as React Native Views. No configuration is needed, and Skia's `jestEnv`/`jestSetup` files are not used. Remove a hand-written mock of Skia, such as `vi.mock('@shopify/react-native-skia', () => require('@shopify/react-native-skia/lib/commonjs/mock').Mock(global.CanvasKit))`: the preset replaces it, and under the mock engine a `require()` of a path inside Skia's package returns the preset's module.
+
+The named exports are read from the installed version, because Skia's API changes between releases (2.15.0 added `SkiaGraphiteView`; 3.0.5 removed `useVideo`), so an import resolves as it does in the app for whichever version the project has.
+
+Beyond Skia's own mock, the preset adds Skia's Reanimated helpers (`usePathValue`, `useTexture`, `notifyChange`, …) running over the reanimated preset. Where the mock already defines one (`useClock`, `usePathInterpolation`, `useImageAsTexture` and the buffer hooks), the mock's placeholder is kept, as under Skia's Jest setup. It also makes `matchFont` and `useFont` return a font of the requested size, on Skia's default typeface, because CanvasKit has no system fonts and the mock's `useFont` ignores the size. As under Skia's Jest setup, `drawAsImage`, `drawAsPicture` and `drawAsImageFromPicture` are no-ops that return `undefined`; `Skia.PictureRecorder`, `Skia.Surface` and `makeImageSnapshot` draw for real.
+
+The preset needs a worker pool (`threads`, the default, or `forks`): Skia's mock loads `react-native` through Node's `require`, which a VM pool does not route to the React Native mock, so a `vmThreads` or `vmForks` run is refused.
+
+CanvasKit loads before each test file, as Skia's Jest environment does, so a project where Skia resolves, including a copy hoisted to a workspace root, pays that start-up cost in every file (about 20–30 ms in a fresh worker, more under parallel load). If CanvasKit cannot load, every test file fails with an error that names the cause. If no test touches Skia, turn the preset off with `reactNative({ presets: { skia: false } })`.
 
 ## Mock resets
 
