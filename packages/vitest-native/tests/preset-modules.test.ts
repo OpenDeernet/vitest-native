@@ -35,6 +35,14 @@ describe("selectPresets", () => {
     });
   });
 
+  it("accepts every preset vitest-native exports", () => {
+    // A factory that does not mark its preset would be refused as a copy.
+    for (const [name, factory] of Object.entries(presets)) {
+      const preset = (factory as () => Parameters<typeof selectPresets>[0][number])();
+      expect(selectPresets([preset], os.tmpdir()).listed, name).toEqual([preset]);
+    }
+  });
+
   it("adds a module path beside auto-detection in the object form", () => {
     const root = project({ "my-preset.ts": PRESET_SOURCE });
     expect(
