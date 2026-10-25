@@ -37,8 +37,41 @@
   `require()`, `jest.requireActual`'s dependencies and React Native's own requires of a mocked internal;
   `jest.isolateModules` and `jest.isolateModulesAsync` work. TypeScript app files that Node loads are
   compiled with the project's Babel config, as babel-jest compiles them.
+- **Unistyles and Skia are mocked automatically.** The new `unistyles` and `skia` presets are
+  auto-detected. Remove Unistyles' `react-native-unistyles/mocks` setup file, whose `jest.mock()` calls
+  would replace the preset (`vitest-native migrate` removes it), and a hand-written Skia mock, which the
+  preset replaces. Skia's preset loads CanvasKit before each test file, about 20–30 ms;
+  `presets: { skia: false }` turns it off.
+- **Presets of your own are listed by path.** A preset object of a project's own passed to `presets`
+  used to shadow its packages with undefined exports; it is now refused at startup. List the module that
+  exports it instead: `presets: { './test/presets/my-lib.ts': true }`.
 
 ### Minor Changes
+
+- f107c6a: A `unistyles` preset for `react-native-unistyles` 3, which resolves styles in native code and could not load in tests. It is auto-detected when the package is installed. It covers everything Unistyles' own Jest mock does (themes from `StyleSheet.configure`, `StyleSheet.create`, `useUnistyles`, `withUnistyles`, `UnistylesRuntime`), and it follows the library's source where that mock does less:
+
+  - styles resolve as the device parses them: breakpoint values and `mq` keys against the screen, `_web` styles dropped;
+  - variants and compound variants apply by the device's rules, selected with `useVariants`;
+  - `StyleSheet.configure()` validates its input and picks the theme with the device runtime's messages; adaptive themes follow the colour scheme, and `setTheme`, `updateTheme` and `setAdaptiveThemes` take effect;
+  - `useUnistyles()`, `withUnistyles`, `Display`, `Hide` and `ScopedTheme` re-render on a theme or screen change;
+  - `ScopedTheme` scopes a theme to its children, and `withUnistyles` applies `uniProps`;
+  - `Display` and `Hide` follow `mq` against the screen size;
+  - `StyleSheet.flatten`, `compose`, `absoluteFill` and `hairlineWidth` are React Native's, as on a device;
+  - `resetAllMocks()` returns the theme to what `StyleSheet.configure()` set.
+
+  `vitest-native migrate` now deletes a library's own test setup file (such as `react-native-unistyles/mocks`) when a detected preset shadows that library, since its `jest.mock()` calls would replace the preset.
+
+- 12a6dc5: A `skia` preset for Skia, which threw at import in tests ("Native Skia Module failed to correctly install JSI Bindings"). It covers both of Skia's package names, `react-native-skia` (2.15.0 and 3.x) and `@shopify/react-native-skia` (up to 2.14.0), shadows whichever is installed, and works under both engines.
+
+  - It loads CanvasKit, Skia compiled to WebAssembly, and serves Skia's own test mock over it, so the `Skia` API computes with real Skia, and `Canvas` and its drawing render as Views.
+  - Its named exports are read from the installed version's ESM build, since Skia's API changes between releases.
+  - It adds Skia's Reanimated helpers (`usePathValue`, `useTexture`, …), which the mock leaves out, and makes `matchFont` return a font.
+
+  The `Preset` type gains an optional async `prepare()`, which completes before any of the user's setup files or test files load, and `PresetModule` an optional `exportsFor()`, which reads the module's named exports from the installed package (or returns `null` when it is not installed, leaving it unshadowed). The skia preset uses both.
+
+  The project root given to test workers now follows `test.root` (or `--root`), as Vitest's does; a run started from a parent directory resolved packages from that directory in every worker.
+
+- 51c351d: Presets of a project's own now work. A preset object passed to `presets: [...]` shadowed its packages with modules whose every export was undefined, under both engines: each test worker rebuilds the presets by name from vitest-native's own, and a preset's factories, being functions, cannot reach a worker from the config. A preset is now listed by the path of a module that default-exports it (or a function returning it): `presets: { './test/presets/my-lib.ts': true }` beside auto-detection, or `presets: ['./test/presets/my-lib.ts']` in a full list. The plugin reads its name and export names while loading the config, and each worker imports it, through Vitest so a TypeScript module loads. A preset object that is not exactly what one of vitest-native's factories returned, such as a built-in preset copied or extended, is refused at configuration time, naming the module form.
 
 - 6724815: Native engine: native module lookups answer the way a device does
 
@@ -144,6 +177,12 @@
   extensions still apply and one warning names the gap. Default: `false`.
 
 ### Patch Changes
+
+- 61ae436: Preset mocks keep their behaviour through `vi.resetAllMocks()` and `mockReset: true`. A gesture-handler gesture built before a reset, such as `Gesture.Pan()` at module scope, keeps chaining. In the mock engine, `Platform.select()` follows `Platform.OS` after a reset, so a setup file's `setPlatform('android')` is no longer undone for `select()` while `Platform.OS` stays `"android"`. `Platform.select()` also picks by key presence, as React Native does, so an explicit `ios: undefined` selects `undefined`.
+
+- de438fc: The reanimated preset's animation builders keep chaining after `vi.resetAllMocks()` or `mockReset: true`, so `LinearTransition.springify().damping(20)` and `SharedTransition.duration(300).custom(...)` no longer throw.
+
+- df06716: Under the native engine, an imported BMP image's `width` and `height` are read as Metro 0.87.1 reads them. An OS/2 bitmap (12-byte header) now has its real dimensions instead of a misread width, and a file whose header size is not a bitmap's registers without dimensions, as other unreadable images do.
 
 - dc2543b: `migrate` writes Jest's mock-clearing behaviour correctly:
 
