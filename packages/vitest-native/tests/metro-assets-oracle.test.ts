@@ -10,9 +10,10 @@
  * is divided by, which keys the module drops, how a platform variant groups — can
  * only be contradicted by Metro itself.
  *
- * The image formats below are header-only files: Metro measures them with the
- * `image-size` package and this package reads the same header fields itself, so
- * they double as an oracle for the dimension reader.
+ * The image formats below are header-only files: Metro measures them by their
+ * headers (with its own reader, metro/src/lib/imageSize.js, from 0.87.1; with the
+ * `image-size` package before) and this package reads the same header fields
+ * itself, so they double as an oracle for the dimension reader.
  */
 import { afterAll, describe, it, expect } from "vitest";
 import crypto from "node:crypto";
@@ -99,7 +100,7 @@ describe("asset descriptors match Metro's", () => {
   });
 });
 
-describe("image dimensions match Metro's (image-size) for each format", () => {
+describe("image dimensions match Metro's for each format", () => {
   const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "vn-asset-oracle-"));
   afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
 
@@ -151,16 +152,30 @@ describe("image dimensions match Metro's (image-size) for each format", () => {
       { width: 11, height: 13 },
     ],
     [
-      // A top-down bitmap: negative height.
+      // A top-down bitmap (BITMAPINFOHEADER, 40 bytes): negative height.
       "bitmap.bmp",
       Buffer.from([
         ...Buffer.from("BM"),
-        ...Array.from({ length: 16 }, () => 0),
+        ...Array.from({ length: 12 }, () => 0),
+        ...u32le(40),
         ...u32le(17),
         ...u32le(-19 >>> 0),
         ...Array.from({ length: 28 }, () => 0),
       ]),
       { width: 17, height: 19 },
+    ],
+    [
+      // An OS/2 bitmap (BITMAPCOREHEADER, 12 bytes): 16-bit width and height.
+      "core.bmp",
+      Buffer.from([
+        ...Buffer.from("BM"),
+        ...Array.from({ length: 12 }, () => 0),
+        ...u32le(12),
+        ...u16le(37),
+        ...u16le(41),
+        ...Array.from({ length: 8 }, () => 0),
+      ]),
+      { width: 37, height: 41 },
     ],
     [
       "extended.webp",
@@ -189,7 +204,7 @@ describe("image dimensions match Metro's (image-size) for each format", () => {
   }
 
   it("a file that is not the image its extension claims registers without dimensions", () => {
-    // Metro would throw from image-size here; a test suite with placeholder image
+    // Metro would throw here; a test suite with placeholder image
     // fixtures would then fail to import them, so this package registers the asset
     // without width and height instead — the one deliberate divergence.
     const file = path.join(dir, "placeholder.png");

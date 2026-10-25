@@ -18,8 +18,9 @@
 //
 // Everything below mirrors those Metro functions on the same inputs, synchronously
 // (the Node require hook cannot await), and with no dependency: Metro measures images
-// with the `image-size` package, while the formats React Native apps ship as images
-// are read here from their headers, as the format specifications define them.
+// from their headers (with its own reader, metro/src/lib/imageSize.js, from 0.87.1;
+// with the `image-size` package before), and the formats React Native apps ship as
+// images are read here from their headers, as the format specifications define them.
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { createRequire } from "node:module";
@@ -139,16 +140,16 @@ function assetRecord(file, platform) {
 
 /**
  * Pixel dimensions from an image's header, or null when the format is not one read
- * here or the header is not what its specification says. Metro gets these from
- * `image-size`; the formats below cover what React Native renders as images.
+ * here or the header is not what its specification says. Metro reads these from the
+ * same headers; the formats below cover what React Native renders as images.
  */
 export function imageDimensions(buffer) {
   const b = buffer;
   if (b.length >= 24 && b.readUInt32BE(0) === 0x89504e47 && b.readUInt32BE(4) === 0x0d0a1a0a) {
     // PNG (W3C PNG Specification, 3rd ed., §5.2-5.3 and §11.2.1): the IHDR chunk is
     // first; width and height are its first two 4-byte big-endian fields. Apple's
-    // Xcode-optimised PNGs put a CgBI chunk in front of it, which image-size also
-    // reads through.
+    // Xcode-optimised PNGs put a CgBI chunk in front of it, which Metro also reads
+    // through.
     const at = b.toString("latin1", 12, 16) === "CgBI" ? 32 : 16;
     if (b.length < at + 8) return null;
     return { width: b.readUInt32BE(at), height: b.readUInt32BE(at + 4) };
@@ -159,9 +160,15 @@ export function imageDimensions(buffer) {
     return { width: b.readUInt16LE(6), height: b.readUInt16LE(8) };
   }
   if (b.length >= 26 && b.toString("latin1", 0, 2) === "BM") {
-    // BMP (BITMAPINFOHEADER): signed 32-bit width/height at 18/22; a negative height
-    // marks a top-down bitmap. Read as image-size reads it.
-    return { width: b.readUInt32LE(18), height: Math.abs(b.readInt32LE(22)) };
+    // BMP, read as Metro's parseBmp (metro/src/lib/imageSize.js) reads it. The DIB
+    // header's size at 14 says which header follows: the OS/2 BITMAPCOREHEADER (12)
+    // holds 16-bit width/height at 18/20; BITMAPINFOHEADER and later (40+) hold
+    // signed 32-bit width/height at 18/22, a negative height marking a top-down
+    // bitmap. Metro rejects any other size.
+    const header = b.readUInt32LE(14);
+    if (header === 12) return { width: b.readUInt16LE(18), height: b.readUInt16LE(20) };
+    if (header < 40) return null;
+    return { width: Math.abs(b.readInt32LE(18)), height: Math.abs(b.readInt32LE(22)) };
   }
   if (b.length >= 4 && b[0] === 0xff && b[1] === 0xd8) {
     // JPEG (ITU-T T.81, Annex B): walk the marker segments to the first
