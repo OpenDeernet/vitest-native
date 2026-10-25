@@ -76,17 +76,6 @@ const KNOWN_DIVERGENCES: Record<string, Record<string, string>> = {
   "@gorhom/bottom-sheet": {
     useBottomSheetDynamicSnapPoints: "removed in bottom-sheet 5; present in 4.x",
   },
-  // The devDependency is held at 3.4.0 by the seven-day minimum release age
-  // (bunfig.toml); 3.5.0 made these enums runtime exports, so a 3.5 app imports them.
-  // They go stale, and fail below, once the devDependency reaches 3.5.
-  "react-native-unistyles": {
-    ColorScheme: "a runtime export from Unistyles 3.5.0; type-only in 3.4",
-    Orientation: "a runtime export from Unistyles 3.5.0; type-only in 3.4",
-    StatusBarStyle: "a runtime export from Unistyles 3.5.0; type-only in 3.4",
-    IOSContentSizeCategory: "a runtime export from Unistyles 3.5.0; type-only in 3.4",
-    AndroidContentSizeCategory: "a runtime export from Unistyles 3.5.0; type-only in 3.4",
-    WebContentSizeCategory: "a runtime export from Unistyles 3.5.0; type-only in 3.4",
-  },
   "expo-status-bar": {
     setStatusBarBackgroundColor: "Android-only setter removed in SDK 53; present earlier",
     setStatusBarTranslucent: "Android-only setter removed in SDK 53; present earlier",
