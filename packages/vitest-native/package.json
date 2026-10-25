@@ -152,7 +152,7 @@
     "@types/node": "25.9.9",
     "@types/react": "19.3.0",
     "@vitest/coverage-v8": "5.0.5",
-    "expo-constants": "57.0.19",
+    "expo-constants": "58.0.12",
     "expo-status-bar": "57.0.1",
     "ext-platform-lib": "file:./tests-native/fixtures/ext-platform-lib",
     "ext-rn-named-lib": "file:./tests-native/fixtures/ext-rn-named-lib",
@@ -187,7 +187,8 @@
   "scripts": {
     "build": "bunx --bun tsdown && node scripts/copy-static-types.mjs",
     "test": "vitest run",
-    "test:native": "vitest run --config tests-native/vitest.config.mts",
+    "test:native": "vitest run --config tests-native/vitest.config.mts && bun run test:native:preset-modules",
+    "test:native:preset-modules": "vitest run --config tests-native/vitest.custom-preset.config.mts --mode native && vitest run --config tests-native/vitest.custom-preset.config.mts --mode hot && vitest run --config tests-native/vitest.custom-preset.config.mts --mode mock",
     "test:native:forks": "vitest run --config tests-native/vitest.forks.config.mts",
     "test:native:navigation": "vitest run --config tests-native/vitest.navigation.config.mts",
     "test:native:android": "vitest run --config tests-native/vitest.android.config.mts",
@@ -217,8 +218,8 @@
     "validate:metro-profile": "node --expose-gc validation/module-isolation/run-metro-profile.mjs"
   },
   "dependencies": {
-    "flow-remove-types": "^2.333.0",
-    "magic-string": "^1.4.2"
+    "flow-remove-types": "^2.336.0",
+    "magic-string": "^1.4.3"
   },
   "bin": {
     "vitest-native": "./dist/cli.mjs"
